@@ -19,10 +19,20 @@ const Login: React.FC = () => {
 
     try {
       const response = await authService.login({ email, password });
-      login(response.user, response.token);
-      navigate('/');
-    } catch {
-      setError('Login failed. Please check your credentials.');
+      const user = {
+        id: response.user.id,
+        username: response.user.username ?? response.user.name ?? '',
+        email: response.user.email,
+        avatar: response.user.avatar ?? response.user.photoURL,
+        photoURL: response.user.photoURL,
+        role: response.user.role,
+        premium: response.user.premium,
+        name: response.user.name,
+      };
+      login(user as any, response.accessToken);
+      navigate('/home');
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }

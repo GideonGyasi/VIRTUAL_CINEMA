@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import ReactPlayer from "react-player";
-import { Popcorn, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type{ Movie, Reaction } from "./types";
 
 interface PlayerAreaProps {
@@ -30,7 +30,6 @@ const PlayerArea: React.FC<PlayerAreaProps> = ({
   playbackRate,
   showPlayOverlay,
   isHost,
-  participantCount,
   showCameraPanel,
   reactions,
   onToggleCameraPanel,
@@ -103,6 +102,7 @@ const PlayerArea: React.FC<PlayerAreaProps> = ({
                 <div className="text-4xl mb-4">▶️</div>
                 <div className="text-emerald-300 mb-3 text-lg">Click to Join the Stream</div>
                 <div className="text-sm text-emerald-200 mb-4">
+                  // eslint-disable-next-line react-hooks/refs
                   The movie is synced with the host at {playerRef.current?.getCurrentTime()?.toFixed(1) || 0}s
                 </div>
                 <button 
@@ -115,24 +115,8 @@ const PlayerArea: React.FC<PlayerAreaProps> = ({
             </div>
           )}
           
-          {isHost && (
-            <div className="absolute bottom-4 right-4 bg-black/80 backdrop-blur-sm rounded-lg p-2 border border-emerald-600/30">
-              <div className="flex items-center gap-2 text-xs">
-                <div className="w-2 h-2 rounded-full animate-pulse bg-green-500"></div>
-                <span className="text-emerald-300 font-medium">HOST</span>
-              </div>
-            </div>
-          )}
         </div>
 
-        <div className="absolute top-2 left-2 bg-black/50 backdrop-blur-sm rounded px-2 py-1 border border-emerald-800/30">
-          <div className="flex items-center gap-1">
-            <Popcorn className="text-emerald-400" size={12} />
-            <span className="text-emerald-400 text-xs font-medium">
-              {participantCount} in cinema
-            </span>
-          </div>
-        </div>
 
         {!showCameraPanel && (
           <button

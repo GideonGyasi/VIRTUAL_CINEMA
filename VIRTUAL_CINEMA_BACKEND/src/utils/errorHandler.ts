@@ -64,13 +64,17 @@ export const errorHandler = (
   const statusCode = (error as AppError).statusCode || 500;
   const message = error.message || 'Server Error';
 
-  const response: ApiResponse = {
+   const response:  ApiResponse = {
     success: false,
     error: message,
   };
+
 
   res.status(statusCode).json(response);
 };
 
 export const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextFunction) =>
   Promise.resolve(fn(req, res, next)).catch(next);
+
+export { ApiResponse };
+

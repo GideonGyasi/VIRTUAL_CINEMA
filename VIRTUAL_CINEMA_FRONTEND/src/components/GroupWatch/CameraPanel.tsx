@@ -1,5 +1,5 @@
 import React from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Popcorn } from "lucide-react";
 import VideoStream from "./VideoStream";
 import type { Participant } from "./types";
 
@@ -55,8 +55,9 @@ const CameraPanel: React.FC<CameraPanelProps> = ({
       />
       
       <div className="p-2 border-b border-emerald-900/20 bg-emerald-950/10 flex items-center justify-between">
-        <h3 className="font-semibold text-xs text-emerald-400">
-          Cameras ({participantCount})
+        <h3 className="font-semibold text-xs text-emerald-400 flex items-center gap-1.5">
+          <Popcorn size={14} />
+          <span>Participants in cinema ({participantCount})</span>
         </h3>
         <button
           onClick={onClose}
@@ -82,6 +83,7 @@ const CameraPanel: React.FC<CameraPanelProps> = ({
                   stream={localParticipant.stream}
                   isLocal={true}
                   cameraOn={localParticipant.cameraOn}
+                  muted={localParticipant.muted}
                   className="w-full h-full"
                 />
 
@@ -99,11 +101,6 @@ const CameraPanel: React.FC<CameraPanelProps> = ({
                   {localParticipant.muted && (
                     <div className="bg-black/70 rounded-full p-1">
                       <span className="text-red-400 text-xs">🔇</span>
-                    </div>
-                  )}
-                  {localParticipant.isHost && (
-                    <div className="bg-black/70 rounded-full p-1">
-                      <span className="text-[8px] text-emerald-400 font-bold">HOST</span>
                     </div>
                   )}
                 </div>

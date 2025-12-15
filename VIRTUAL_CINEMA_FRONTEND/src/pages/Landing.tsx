@@ -6,7 +6,8 @@ import CategorySection from '../components/CategorySection';
 import AuthModal from '../components/AuthModal';
 import { fetchMoviesWithVideos } from '../services/movieApi';
 import type { MovieDetails } from '../types/movie';
-import Navbar from '../components/Navbar';
+import Header from '../components/Header';
+import Sidebar from '../components/Sidebar';
 import { Play, Users, Star, Clock, Popcorn, Film } from 'lucide-react';
 
 const Landing: React.FC = () => {
@@ -14,6 +15,7 @@ const Landing: React.FC = () => {
   const [movies, setMovies] = useState<MovieDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
 
   // Fetch real movies from API
@@ -141,28 +143,24 @@ const Landing: React.FC = () => {
   }
 
   return (
-    <Box sx={{ 
-      minHeight: '100vh', 
-      bgcolor: '#000000',
-      background: 'linear-gradient(135deg, #000000 0%, #001f00 50%, #000000 100%)',
-      color: 'white',
-      position: 'relative',
-      overflow: 'hidden',
-      '&::before': {
-        content: '""',
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'radial-gradient(circle at 20% 80%, rgba(0, 191, 166, 0.1) 0%, transparent 50%)',
-        pointerEvents: 'none'
-      }
-    }}>
-      <Navbar onAuthClick={() => setShowAuthModal(true)} />
+    <div className="min-h-screen bg-gradient-to-b from-black via-[#0a0a0a] to-black text-white relative overflow-hidden">
+      {/* Background Effects */}
+      <div className="absolute inset-0 bg-gradient-to-br from-black via-[#0a0a0a] to-black">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-[#00bfa6]/10 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-96 h-96 bg-[#00bfa6]/5 rounded-full blur-3xl" />
+      </div>
 
-      {/* Hero Section */}
-      <Box sx={{ position: 'relative', overflow: 'hidden', pt: 8, pb: 6 }}>
+      {/* Sidebar */}
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
+      {/* Main Content */}
+      <div className={`transition-all duration-300 relative z-10 ${sidebarOpen ? 'md:ml-[280px]' : 'md:ml-0'}`}>
+        {/* Header */}
+        <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+
+        {/* Hero Section */}
+        <div className="relative overflow-hidden pt-24 pb-12">
+          <Box sx={{ position: 'relative', overflow: 'hidden', pt: 4, pb: 6 }}>
         <Container maxWidth="lg">
           <Grid container spacing={6} alignItems="center" sx={{ minHeight: '80vh' }}>
             <Grid item xs={12} md={6}>
@@ -463,108 +461,110 @@ const Landing: React.FC = () => {
             )}
           </Grid>
         </Container>
-      </Box>
+          </Box>
 
-      {/* Categories Section */}
-      <Box sx={{ py: 8, position: 'relative' }}>
-        <Container maxWidth="lg">
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.2 }}
-          >
-            <Box sx={{ textAlign: 'center', mb: 6 }}>
-              <Typography
-                variant="h2"
-                sx={{
-                  fontSize: { xs: '2rem', md: '2.5rem' },
-                  fontWeight: 700,
-                  mb: 2,
-                  background: 'linear-gradient(135deg, #ffffff 0%, #00bfa6 100%)',
-                  backgroundClip: 'text',
-                  WebkitBackgroundClip: 'text',
-                  color: 'transparent'
-                }}
+          {/* Categories Section */}
+          <Box sx={{ py: 8, position: 'relative' }}>
+            <Container maxWidth="lg">
+              <motion.div
+                initial={{ opacity: 0, y: 40 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.2 }}
               >
-                Curated Collections
-              </Typography>
-              <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.7)', maxWidth: 600, mx: 'auto' }}>
-                Discover hand-picked movies perfect for your next virtual cinema experience
-              </Typography>
-            </Box>
+                <Box sx={{ textAlign: 'center', mb: 6 }}>
+                  <Typography
+                    variant="h2"
+                    sx={{
+                      fontSize: { xs: '2rem', md: '2.5rem' },
+                      fontWeight: 700,
+                      mb: 2,
+                      background: 'linear-gradient(135deg, #ffffff 0%, #00bfa6 100%)',
+                      backgroundClip: 'text',
+                      WebkitBackgroundClip: 'text',
+                      color: 'transparent'
+                    }}
+                  >
+                    Curated Collections
+                  </Typography>
+                  <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.7)', maxWidth: 600, mx: 'auto' }}>
+                    Discover hand-picked movies perfect for your next virtual cinema experience
+                  </Typography>
+                </Box>
 
-            {categories.some(cat => cat.movies.length > 0) ? (
-              <CategorySection
-                categories={categories.filter(cat => cat.movies.length > 0)}
-                onWatchAlone={handleWatchAlone}
-                onWatchWithFriends={handleWatchWithFriends}
-              />
-            ) : (
-              <Box sx={{ textAlign: 'center', py: 8 }}>
-                <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.7)' }}>
-                  No movies available in categories yet
-                </Typography>
-              </Box>
-            )}
-          </motion.div>
-        </Container>
-      </Box>
+                {categories.some(cat => cat.movies.length > 0) ? (
+                  <CategorySection
+                    categories={categories.filter(cat => cat.movies.length > 0)}
+                    onWatchAlone={handleWatchAlone}
+                    onWatchWithFriends={handleWatchWithFriends}
+                  />
+                ) : (
+                  <Box sx={{ textAlign: 'center', py: 8 }}>
+                    <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.7)' }}>
+                      No movies available in categories yet
+                    </Typography>
+                  </Box>
+                )}
+              </motion.div>
+            </Container>
+          </Box>
 
-      {/* CTA Section */}
-      <Box sx={{ py: 8, position: 'relative' }}>
-        <Container maxWidth="md">
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.4 }}
-          >
-            <Box
-              sx={{
-                textAlign: 'center',
-                p: 6,
-                bgcolor: 'rgba(0, 191, 166, 0.05)',
-                border: '1px solid rgba(0, 191, 166, 0.2)',
-                borderRadius: 4,
-                backdropFilter: 'blur(10px)'
-              }}
-            >
-              <Popcorn size={48} color="#00bfa6" style={{ margin: '0 auto 20px' }} />
-              <Typography variant="h4" sx={{ fontWeight: 700, mb: 2, color: '#00bfa6' }}>
-                Ready for Movie Night?
-              </Typography>
-              <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.8)', mb: 4, maxWidth: 500, mx: 'auto' }}>
-                Create your virtual cinema room and invite friends for an unforgettable watching experience
-              </Typography>
-              <Button
-                variant="contained"
-                size="large"
-                startIcon={<Users size={20} />}
-                sx={{
-                  bgcolor: '#00bfa6',
-                  color: '#000000',
-                  '&:hover': { 
-                    bgcolor: '#00d1b0',
-                    transform: 'translateY(-2px)',
-                    boxShadow: '0 8px 25px rgba(0, 191, 166, 0.4)'
-                  },
-                  transition: 'all 0.3s ease',
-                  borderRadius: 2,
-                  fontWeight: 700,
-                  px: 4,
-                  py: 1.5,
-                  fontSize: '1.1rem'
-                }}
-                onClick={handleWatchWithFriends}
+          {/* CTA Section */}
+          <Box sx={{ py: 8, position: 'relative' }}>
+            <Container maxWidth="md">
+              <motion.div
+                initial={{ opacity: 0, y: 40 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, delay: 0.4 }}
               >
-                Start Your Cinema Party
-              </Button>
-            </Box>
-          </motion.div>
-        </Container>
-      </Box>
+                <Box
+                  sx={{
+                    textAlign: 'center',
+                    p: 6,
+                    bgcolor: 'rgba(0, 191, 166, 0.05)',
+                    border: '1px solid rgba(0, 191, 166, 0.2)',
+                    borderRadius: 4,
+                    backdropFilter: 'blur(10px)'
+                  }}
+                >
+                  <Popcorn size={48} color="#00bfa6" style={{ margin: '0 auto 20px' }} />
+                  <Typography variant="h4" sx={{ fontWeight: 700, mb: 2, color: '#00bfa6' }}>
+                    Ready for Movie Night?
+                  </Typography>
+                  <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.8)', mb: 4, maxWidth: 500, mx: 'auto' }}>
+                    Create your virtual cinema room and invite friends for an unforgettable watching experience
+                  </Typography>
+                  <Button
+                    variant="contained"
+                    size="large"
+                    startIcon={<Users size={20} />}
+                    sx={{
+                      bgcolor: '#00bfa6',
+                      color: '#000000',
+                      '&:hover': { 
+                        bgcolor: '#00d1b0',
+                        transform: 'translateY(-2px)',
+                        boxShadow: '0 8px 25px rgba(0, 191, 166, 0.4)'
+                      },
+                      transition: 'all 0.3s ease',
+                      borderRadius: 2,
+                      fontWeight: 700,
+                      px: 4,
+                      py: 1.5,
+                      fontSize: '1.1rem'
+                    }}
+                    onClick={handleWatchWithFriends}
+                  >
+                    Start Your Cinema Party
+                  </Button>
+                </Box>
+              </motion.div>
+            </Container>
+          </Box>
+        </div>
 
-      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
-    </Box>
+        <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
+      </div>
+    </div>
   );
 };
 

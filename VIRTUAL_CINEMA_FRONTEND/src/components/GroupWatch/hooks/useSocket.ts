@@ -11,17 +11,17 @@ interface UseSocketProps {
   isHost: boolean;
   playerReady: boolean;
   initialSyncApplied: boolean;
-  onRoomSync: (data: any) => void;
+  onRoomSync: (data: unknown) => void;
   onMovieUpdate: (movieData: Movie) => void;
   onParticipantsUpdate: (data: Participant[]) => void;
   onChatMessage: (msg: ChatMessage) => void;
-  onEmojiReaction: (reactionData: any) => void;
+  onEmojiReaction: (reactionData: unknown) => void;
   onVideoPlay: (data: { time: number; at: number }) => void;
   onVideoPause: (data: { time: number; at: number }) => void;
   onVideoSeek: (data: { time: number; at: number }) => void;
-  onVideoSync: (data: any) => void;
+  onVideoSync: (data: unknown) => void;
   onParticipantJoined: (participant: Participant) => void;
-  onDirectSync: (data: any) => void;
+  onDirectSync: (data: unknown) => void;
 }
 
 export const useSocket = ({
@@ -29,9 +29,6 @@ export const useSocket = ({
   movie,
   userId,
   userName,
-  isHost,
-  playerReady,
-  initialSyncApplied,
   onRoomSync,
   onMovieUpdate,
   onParticipantsUpdate,
@@ -45,7 +42,7 @@ export const useSocket = ({
   onDirectSync,
 }: UseSocketProps) => {
   const socketRef = useRef<Socket | null>(null);
-  const joinedRoom = useRef(false);
+
 
   useEffect(() => {
     const socket = io(SOCKET_URL, { 

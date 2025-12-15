@@ -1,7 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import Landing from './pages/Landing';
+import { AnimatePresence } from 'framer-motion';
 import Home from './pages/Home';
 import Login from './pages/Auth/Login';
 import Register from './pages/Auth/Register';
@@ -13,17 +12,7 @@ import SocketProvider from './context/SocketContext';
 import { useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
 
-const pageVariants = {
-  initial: { opacity: 0, y: 20 },
-  in: { opacity: 1, y: 0 },
-  out: { opacity: 0, y: -20 }
-};
 
-const pageTransition = {
-  type: 'tween',
-  ease: 'anticipate',
-  duration: 0.4
-};
 
 function PrivateRoute({ children }: { children: React.ReactElement }) {
   const { isAuthenticated } = useAuth();
@@ -37,26 +26,12 @@ function App() {
       <SocketProvider>
         <AnimatePresence mode="wait">
           <Routes>
-            <Route
-              path="/"
-              element={
-                <motion.div
-                  key="landing"
-                  initial="initial"
-                  animate="in"
-                  exit="out"
-                  variants={pageVariants}
-                  transition={pageTransition}
-                >
-                  <Landing />
-                </motion.div>
-              }
-            />
-
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
 
-            <Route path="/home" element={<PrivateRoute><Home /></PrivateRoute>} />
+            {/* Home page is accessible without auth */}
+            <Route path="/" element={<Layout><Home /></Layout>} />
+            <Route path="/home" element={<Layout><Home /></Layout>} />
 
             <Route path="/room/:roomId" element={<PrivateRoute><Room /></PrivateRoute>} />
             <Route path="/room/create" element={<PrivateRoute><CreateRoom /></PrivateRoute>} />

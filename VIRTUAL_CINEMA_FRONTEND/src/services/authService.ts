@@ -14,11 +14,15 @@ export interface RegisterData {
 export interface AuthResponse {
   user: {
     id: string;
-    username: string;
+    username?: string;
+    name?: string;
     email: string;
     avatar?: string;
+    photoURL?: string;
+    role?: 'USER' | 'HOST' | 'ADMIN';
+    premium?: boolean;
   };
-  token: string;
+  accessToken: string;
 }
 
 export const authService = {

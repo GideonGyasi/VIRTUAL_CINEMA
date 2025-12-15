@@ -137,7 +137,6 @@ const Navbar: React.FC<NavbarProps> = ({ onAuthClick }) => {
           <List>
             {navItems.map((item) => (
               <ListItem
-                button
                 key={item.text}
                 component={RouterLink}
                 to={item.to}

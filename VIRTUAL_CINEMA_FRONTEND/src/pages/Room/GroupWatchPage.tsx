@@ -4,6 +4,8 @@ import GroupWatch from './GroupWatch';
 import { mockMovies } from '../../data/movies';
 import { useMovieStore } from '../../store/movieStore';
 import { getPlayableVideoUrl, fetchMoviesFromTmdb, fetchMoviesFromOmdb } from '../../services/movieApi';
+import { useAuth } from '../../hooks/useAuth';
+import AuthModal from '../../components/AuthModal';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -208,8 +210,37 @@ const GroupWatchPage: React.FC = () => {
   const [movie, setMovie] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isHost, setIsHost] = useState(false);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [showNameInput, setShowNameInput] = useState(false);
+  const [nameInput, setNameInput] = useState('');
 
   const { movies } = useMovieStore();
+  const { user, isAuthenticated } = useAuth();
+
+  // Check if user needs to provide name
+  useEffect(() => {
+    // If user is authenticated, use their name
+    if (isAuthenticated && user?.name) {
+      setDisplayName(user.name);
+      setShowNameInput(false);
+      // Persist in localStorage for consistency
+      localStorage.setItem(`displayName_${sessionId}`, user.name);
+    } else if (isHost) {
+      // Host should be authenticated (will be checked before group watch)
+      setDisplayName(user?.name || null);
+      setShowNameInput(false);
+    } else {
+      // If not host and not authenticated, check localStorage first
+      const savedName = localStorage.getItem(`displayName_${sessionId}`);
+      if (savedName) {
+        setDisplayName(savedName);
+        setShowNameInput(false);
+      } else if (!displayName) {
+        // Ask for name if not saved and not already set
+        setShowNameInput(true);
+      }
+    }
+  }, [isAuthenticated, user, isHost, sessionId]);
 
   useEffect(() => {
     const loadMovie = async () => {
@@ -221,6 +252,11 @@ const GroupWatchPage: React.FC = () => {
         if (stateMovie) {
           console.log('📦 Using movie from navigation state (HOST PATH)');
           setIsHost(true);
+          // Host should be authenticated, use their name
+          if (isAuthenticated && user?.name) {
+            setDisplayName(user.name);
+            setShowNameInput(false);
+          }
           const processedMovie = processMovieForProxy(stateMovie, true);
           setMovie(processedMovie);
           setLoading(false);
@@ -304,7 +340,18 @@ const GroupWatchPage: React.FC = () => {
     };
 
     loadMovie();
-  }, [movieId, location.state, movies]);
+  }, [movieId, location.state, movies, isAuthenticated, user]);
+
+  const handleNameSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (nameInput.trim()) {
+      const name = nameInput.trim();
+      setDisplayName(name);
+      setShowNameInput(false);
+      // Persist in localStorage for rejoin convenience
+      localStorage.setItem(`displayName_${sessionId}`, name);
+    }
+  };
 
   if (loading) {
     return (
@@ -314,10 +361,46 @@ const GroupWatchPage: React.FC = () => {
     );
   }
 
+  if (showNameInput && !displayName) {
+    return (
+      <div className="h-screen w-screen bg-black flex items-center justify-center">
+        <div className="bg-gray-900 rounded-2xl border border-[#00bfa6]/30 p-8 max-w-md w-full mx-4">
+          <h2 className="text-2xl font-bold text-white mb-4">Join Stream</h2>
+          <p className="text-gray-400 mb-6">Enter your name to join the group watch session</p>
+          <form onSubmit={handleNameSubmit}>
+            <input
+              type="text"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Your name"
+              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-[#00bfa6] mb-4"
+              required
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="w-full px-4 py-3 bg-gradient-to-r from-[#00bfa6] to-[#00d1b0] text-black font-semibold rounded-lg hover:shadow-lg hover:shadow-[#00bfa6]/30 transition-all"
+            >
+              Join Stream
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   if (!movie) {
     return (
       <div className="h-screen w-screen bg-black flex items-center justify-center">
         <div className="text-red-400 text-lg">Movie not found</div>
+      </div>
+    );
+  }
+
+  if (!displayName) {
+    return (
+      <div className="h-screen w-screen bg-black flex items-center justify-center">
+        <div className="text-emerald-400 text-lg">Loading...</div>
       </div>
     );
   }
@@ -339,7 +422,7 @@ const GroupWatchPage: React.FC = () => {
     director: movie.director
   });
 
-  return <GroupWatch movie={movie} sessionId={sessionId} />;
+  return <GroupWatch movie={movie} sessionId={sessionId} displayName={displayName} />;
 };
 
 export default GroupWatchPage;

@@ -33,8 +33,12 @@ function initializeSocket(io) {
 
     // ====== ROOM:JOIN with MOVIE INFO ======
     socket.on('room:join', (data) => {
-      const { sessionId, movie } = data; // Changed: removed unused 'user' parameter
-      console.log(`[Socket] User ${userId} joining session ${sessionId} with movie:`, movie);
+      const { sessionId, movie, user } = data || {};
+      // If client provided a user object (guest provided name/id), prefer it for participant display
+      const providedId = user && user.id ? user.id : null;
+      const providedName = user && user.name ? user.name : null;
+
+      console.log(`[Socket] User ${userId} joining session ${sessionId} with movie:`, movie, 'providedUser=', user);
 
       if (!sessions[sessionId]) {
         sessions[sessionId] = {
@@ -45,19 +49,20 @@ function initializeSocket(io) {
             lastUpdate: Date.now(),
             playbackRate: 1, // ADDED: playback speed support
             movie: movie || null,
-            hostId: userId // First joiner is host
+            hostId: providedId || userId // First joiner is host; prefer provided id if present
           },
           messages: [],
           emojiReactions: []
         };
-        console.log(`[Socket] Created new session ${sessionId} with host ${userId}`);
+        console.log(`[Socket] Created new session ${sessionId} with host ${sessions[sessionId].state.hostId}`);
       }
 
       const session = sessions[sessionId];
       currentSessionId = sessionId;
       
-      // FIX: Only update movie if user is host and movie is provided
-      if (movie && session.state.hostId === userId) {
+      // FIX: Only update movie if joiner is host (match by providedId if present)
+      const joiningId = providedId || userId;
+      if (movie && session.state.hostId === joiningId) {
         session.state.movie = movie;
       }
       
@@ -65,23 +70,25 @@ function initializeSocket(io) {
       const existingIndex = session.participants.findIndex(p => p.id === userId);
       
       if (existingIndex === -1) {
-        // Add new participant
+        // Add new participant, prefer provided id/name when available
+        const participantId = providedId || userId;
+        const participantName = providedName || userName;
         const participant = {
-          id: userId,
-          name: userName,
+          id: participantId,
+          name: participantName,
           avatar: userAvatar,
           socketId: socket.id,
           muted: false,
           cameraOn: true,
-          isHost: session.state.hostId === userId,
+          isHost: session.state.hostId === participantId,
           joinedAt: Date.now()
         };
         session.participants.push(participant);
       } else {
         // Update existing participant's socket ID (reconnection)
+        // Do not overwrite name if provided previously
         session.participants[existingIndex].socketId = socket.id;
-        // FIX: Don't change isHost status on reconnection
-        // session.participants[existingIndex].isHost = session.state.hostId === userId;
+        if (providedName) session.participants[existingIndex].name = providedName;
       }
 
       // Join socket room
@@ -226,7 +233,8 @@ function initializeSocket(io) {
     socket.on('room:chat:message', (data) => {
       const { sessionId, message } = data;
       if (sessions[sessionId]) {
-        const msgData = {
+        // Use the message from client; it already has proper formatting
+        const msgData = message || {
           id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           userId: userId,
           name: userName,
@@ -288,6 +296,79 @@ function initializeSocket(io) {
           isHost: session.state.hostId === userId,
           hostId: session.state.hostId
         });
+      }
+
+    });
+
+    // Participant profile update (name, avatar)
+    socket.on('room:participant:update', (data) => {
+      const { sessionId, name, avatar } = data || {};
+      if (!sessionId) return;
+      const session = sessions[sessionId];
+      if (!session) return;
+
+      const participant = session.participants.find(p => p.socketId === socket.id || p.id === userId);
+      if (!participant) {
+        console.log(`[Socket] Participant not found for update in session ${sessionId}:`, { socketId: socket.id, userId, data });
+        return;
+      }
+
+      if (name) participant.name = name;
+      if (avatar) participant.avatar = avatar;
+
+      // If the update belongs to this socket's user, update server-side userName/userAvatar variables
+      if (participant.id === userId) {
+        userName = participant.name;
+        userAvatar = participant.avatar;
+      }
+
+      // Broadcast updated participants
+      io.to(sessionId).emit('room:participants', session.participants);
+      console.log(`[Socket] Participant updated in session ${sessionId}:`, { id: participant.id, name: participant.name, avatar: participant.avatar });
+    });
+
+    // ====== ROOM:HOST:REMOVE ======
+    // Host can request removal of a participant by userId
+    socket.on('room:host:remove', (data) => {
+      const { sessionId, userId: targetUserId } = data || {};
+      if (!sessionId || !targetUserId) return;
+      const session = sessions[sessionId];
+      if (!session) return;
+
+      // Only allow host (or co-hosts if you decide) to remove participants
+      const requesterId = userId;
+      if (session.state.hostId !== requesterId) {
+        console.log(`[Socket] Ignoring host:remove from non-host ${requesterId}`);
+        return;
+      }
+
+      const target = session.participants.find((p) => p.id === targetUserId);
+      if (!target) return;
+
+      const targetSocketId = target.socketId;
+      try {
+        // Notify the target socket that they have been removed by host
+        io.to(targetSocketId).emit('room:removed', { reason: 'removed_by_host', by: requesterId });
+
+        // Remove participant from session
+        session.participants = session.participants.filter((p) => p.id !== targetUserId && p.socketId !== targetSocketId);
+
+        // Broadcast updated participants list to remaining users
+        io.to(sessionId).emit('room:participants', session.participants);
+
+        // Optionally disconnect the target socket to ensure they are removed
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+          try { targetSocket.leave(sessionId); targetSocket.disconnect(true); } catch (e) { /* ignore */ }
+        }
+        console.log(`[Socket] Host removed user ${targetUserId} from session ${sessionId}`);
+        // If session empty after removal, cleanup
+        if (session.participants.length === 0) {
+          delete sessions[sessionId];
+          console.log(`[Socket] Session ${sessionId} deleted (no participants)`);
+        }
+      } catch (e) {
+        console.error('[Socket] Error handling host remove', e && e.message ? e.message : e);
       }
     });
 

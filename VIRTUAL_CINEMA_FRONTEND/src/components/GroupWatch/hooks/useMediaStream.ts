@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 export const useMediaStream = () => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -7,30 +7,41 @@ export const useMediaStream = () => {
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(true);
 
+  // Refs for external mutable resources
+  const initializedRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
+
   const initializeMediaStream = useCallback(async () => {
     try {
       setMediaError(null);
-      
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+
+      // Stop old tracks if any
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
           width: { ideal: 640 },
           height: { ideal: 480 },
-          facingMode: "user" 
-        }, 
-        audio: true 
+          facingMode: "user",
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
-      
+
+      streamRef.current = stream;
       setLocalStream(stream);
       setCameraInitialized(true);
-      
+
+      // Apply current state to tracks
       stream.getAudioTracks().forEach(track => {
         track.enabled = !muted;
       });
-      
+
       stream.getVideoTracks().forEach(track => {
         track.enabled = cameraOn;
       });
@@ -38,36 +49,43 @@ export const useMediaStream = () => {
       console.error("Error accessing media devices:", error);
       setMediaError("Cannot access camera or microphone.");
     }
-  }, [localStream, muted, cameraOn]);
+  }, [muted, cameraOn]);
 
+  // Initialize ONCE (Strict-Mode safe)
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     initializeMediaStream();
-  }, []);
+  }, [initializeMediaStream]);
 
+  // Sync camera state
   useEffect(() => {
-    if (localStream && cameraInitialized) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = cameraOn;
-      });
-    }
-  }, [cameraOn, localStream, cameraInitialized]);
+    if (!streamRef.current || !cameraInitialized) return;
+
+    streamRef.current.getVideoTracks().forEach(track => {
+      track.enabled = cameraOn;
+    });
+  }, [cameraOn, cameraInitialized]);
+
+  // Sync mute state
+  useEffect(() => {
+    if (!streamRef.current || !cameraInitialized) return;
+
+    streamRef.current.getAudioTracks().forEach(track => {
+      track.enabled = !muted;
+    });
+  }, [muted, cameraInitialized]);
 
   const toggleMute = () => {
-    const newMutedState = !muted;
-    setMuted(newMutedState);
-    
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !newMutedState;
-      });
-    }
+    setMuted(prev => !prev);
   };
 
   const toggleCamera = async () => {
-    const newCameraState = !cameraOn;
-    setCameraOn(newCameraState);
-    
-    if (newCameraState && !localStream) {
+    const next = !cameraOn;
+    setCameraOn(next);
+
+    if (!streamRef.current && next) {
       await initializeMediaStream();
     }
   };
@@ -82,6 +100,6 @@ export const useMediaStream = () => {
     toggleCamera,
     setMuted,
     setCameraOn,
-    initializeMediaStream
+    initializeMediaStream,
   };
 };
