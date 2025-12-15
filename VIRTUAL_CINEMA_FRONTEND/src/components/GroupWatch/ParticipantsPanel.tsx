@@ -1,6 +1,16 @@
-import React from "react";
-import { MicOff, Crown, UserX  } from "lucide-react";
-import type{ Participant } from "./types";
+import React, { useState } from "react";
+import { MicOff, Crown, UserX } from "lucide-react";
+import AvatarPicker, { AVATAR_PRESETS, type AvatarOption } from "./AvatarPicker";
+import type { Participant } from "./types";
+import type { Socket } from "socket.io-client";
+
+/* ---- Socket event typing (optional but clean) ---- */
+interface ClientToServerEvents {
+  "room:participant:update": {
+    sessionId: string | null;
+    avatar: string;
+  };
+}
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -8,6 +18,8 @@ interface ParticipantsPanelProps {
   isHost: boolean;
   onGrantControlAccess?: (participantId: string) => void;
   onRevokeControlAccess?: (participantId: string) => void;
+  socketRef?: React.RefObject<Socket<ClientToServerEvents> | null>;
+  sessionId?: string;
 }
 
 const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
@@ -16,16 +28,80 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   isHost,
   onGrantControlAccess,
   onRevokeControlAccess,
+  socketRef,
+  sessionId,
 }) => {
-  const handleToggleControl = (participant: Participant, e: React.MouseEvent) => {
-    e.stopPropagation();
-    console.log('[👥 PARTICIPANTS] Toggling control access', {
-      participantId: participant.id,
-      participantName: participant.name,
-      hasAccess: participant.hasControlAccess,
-      isHost,
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [editingParticipant, setEditingParticipant] =
+    useState<Participant | null>(null);
+
+  const openAvatarPicker = (participant: Participant) => {
+    setEditingParticipant(participant);
+    setShowAvatarPicker(true);
+  };
+
+  const closeAvatarPicker = () => {
+    setShowAvatarPicker(false);
+    setEditingParticipant(null);
+  };
+
+  const handleAvatarSelect = (avatarOption: AvatarOption) => {
+    if (!editingParticipant || !socketRef?.current) return;
+
+    const avatarData = JSON.stringify(avatarOption);
+
+    socketRef.current.emit("room:participant:update", {
+      sessionId: sessionId ?? null,
+      avatar: avatarData,
     });
-    
+
+    closeAvatarPicker();
+  };
+
+  const renderAvatarPreview = (avatarData?: string) => {
+    if (!avatarData) {
+      return (
+        <div className="w-5 h-5 rounded-full bg-emerald-700 flex items-center justify-center text-xs text-white">
+          ?
+        </div>
+      );
+    }
+
+    try {
+      const avatar = JSON.parse(avatarData) as AvatarOption;
+      return (
+        <div
+          className="w-5 h-5 rounded-full flex items-center justify-center text-sm font-bold"
+          style={{ backgroundColor: avatar.bgColor, color: avatar.textColor }}
+        >
+          {avatar.emoji}
+        </div>
+      );
+    } catch {
+      return (
+        <div className="w-5 h-5 rounded-full bg-emerald-700 flex items-center justify-center text-xs text-white">
+          A
+        </div>
+      );
+    }
+  };
+
+  const getSelectedAvatarId = (avatarData?: string): string => {
+    if (!avatarData) return AVATAR_PRESETS[0].id;
+    try {
+      const avatar = JSON.parse(avatarData) as AvatarOption;
+      return avatar.id;
+    } catch {
+      return AVATAR_PRESETS[0].id;
+    }
+  };
+
+  const handleToggleControl = (
+    participant: Participant,
+    e: React.MouseEvent
+  ) => {
+    e.stopPropagation();
+
     if (participant.hasControlAccess) {
       onRevokeControlAccess?.(participant.id);
     } else {
@@ -40,11 +116,13 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
           Audience ({participants.length})
         </h3>
       </div>
+
       <div className="p-2 space-y-1 overflow-auto max-h-full">
         {participants.map((participant) => {
           const isLocalUser = participant.id === localUserId;
-          const canManageControl = isHost && !isLocalUser && !participant.isHost;
-          
+          const canManageControl =
+            isHost && !isLocalUser && !participant.isHost;
+
           return (
             <div
               key={participant.id}
@@ -56,26 +134,31 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                     {participant.name[0].toUpperCase()}
                   </span>
                 </div>
+
                 {participant.isHost && (
-                  <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-black animate-pulse"></div>
+                  <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full border border-black animate-pulse" />
                 )}
+
                 {participant.hasControlAccess && !participant.isHost && (
-                  <div className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 bg-yellow-400 rounded-full border border-black"></div>
+                  <div className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 bg-yellow-400 rounded-full border border-black" />
                 )}
               </div>
+
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-medium text-white truncate flex items-center gap-1">
                   {participant.name} {isLocalUser && "(You)"}
-                  {participant.isHost && (
-                    <span className="text-[8px] bg-emerald-900/50 px-1 py-0.5 rounded text-emerald-300">HOST</span>
-                  )}
                   {participant.hasControlAccess && !participant.isHost && (
-                    <span className="text-[8px] bg-yellow-900/50 px-1 py-0.5 rounded text-yellow-300">CONTROL</span>
+                    <span className="text-[8px] bg-yellow-900/50 px-1 py-0.5 rounded text-yellow-300">
+                      CONTROL
+                    </span>
                   )}
                 </div>
+
                 <div className="text-[10px] text-emerald-300 flex items-center gap-0.5">
                   {participant.muted ? (
-                    <span className="flex items-center gap-0.5"><MicOff size={8} /> Muted</span>
+                    <span className="flex items-center gap-0.5">
+                      <MicOff size={8} /> Muted
+                    </span>
                   ) : (
                     <span className="text-green-400 text-[8px]">● Live</span>
                   )}
@@ -84,23 +167,38 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   )}
                 </div>
               </div>
+
               {canManageControl && (
                 <button
                   onClick={(e) => handleToggleControl(participant, e)}
                   className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-emerald-900/30 rounded"
-                  title={participant.hasControlAccess ? "Revoke control access" : "Grant control access"}
                 >
                   {participant.hasControlAccess ? (
-                    <UserX  size={14} className="text-yellow-400" />
+                    <UserX size={14} className="text-yellow-400" />
                   ) : (
                     <Crown size={14} className="text-gray-400" />
                   )}
                 </button>
               )}
+
+              <button
+                className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-gray-800 rounded"
+                onClick={() => openAvatarPicker(participant)}
+              >
+                {renderAvatarPreview(participant.avatar)}
+              </button>
             </div>
           );
         })}
       </div>
+
+      {showAvatarPicker && editingParticipant && (
+        <AvatarPicker
+          onSelect={handleAvatarSelect}
+          onCancel={closeAvatarPicker}
+          selectedId={getSelectedAvatarId(editingParticipant.avatar)}
+        />
+      )}
     </div>
   );
 };

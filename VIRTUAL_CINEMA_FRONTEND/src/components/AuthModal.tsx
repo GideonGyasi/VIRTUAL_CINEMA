@@ -12,7 +12,6 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/authService';
 import { useAuth } from '../hooks/useAuth';
 
@@ -30,7 +29,7 @@ const AuthModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const navigate = useNavigate();
+
   const { login } = useAuth();
 
   const handleTabChange = (_: React.SyntheticEvent, newValue: number) => {
@@ -44,12 +43,22 @@ const AuthModal: React.FC<Props> = ({ isOpen, onClose }) => {
     setLoading(true);
     try {
       const res = await authService.login({ email, password });
-      login(res.user, res.token);
+      const userData = {
+        id: res.user.id,
+        username: res.user.username ?? res.user.name ?? '',
+        email: res.user.email,
+        avatar: res.user.avatar ?? res.user.photoURL,
+        photoURL: res.user.photoURL,
+        role: res.user.role || 'USER',
+        premium: res.user.premium || false,
+        name: res.user.name || res.user.username || '',
+      };
+      login(userData , res.accessToken);
       onClose();
-      navigate('/home');
+      // Don't navigate - let the calling component handle navigation
     } catch (err) {
       console.error('Login error', err);
-      setError('Login failed. Please check credentials.');
+      setError( 'Login failed. Please check credentials.');
     } finally {
       setLoading(false);
     }
@@ -65,12 +74,22 @@ const AuthModal: React.FC<Props> = ({ isOpen, onClose }) => {
     setLoading(true);
     try {
       const res = await authService.register({ username, email, password });
-      login(res.user, res.token);
+      const userData = {
+        id: res.user.id,
+        username: res.user.username ?? res.user.name ?? '',
+        email: res.user.email,
+        avatar: res.user.avatar ?? res.user.photoURL,
+        photoURL: res.user.photoURL,
+        role: res.user.role || 'USER',
+        premium: res.user.premium || false,
+        name: res.user.name || res.user.username || username,
+      };
+      login(userData , res.accessToken);
       onClose();
-      navigate('/home');
+      // Don't navigate - let the calling component handle navigation
     } catch (err) {
       console.error('Registration error', err);
-      setError('Registration failed. Please try again.');
+      setError( 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }

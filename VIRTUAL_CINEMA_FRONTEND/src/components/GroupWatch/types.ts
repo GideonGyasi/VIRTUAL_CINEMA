@@ -9,6 +9,7 @@ export type Participant = {
   isHost?: boolean;
   hasControlAccess?: boolean; // Admin control access for playback
   joinedAt?: number;
+  avatar?: string; // Avatar data (JSON string or URL)
 };
 
 export type ChatMessage = {

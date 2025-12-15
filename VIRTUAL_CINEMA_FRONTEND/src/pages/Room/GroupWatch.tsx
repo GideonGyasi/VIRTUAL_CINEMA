@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactPlayer from "react-player";
+import { motion } from "framer-motion";
 import Header from "../../components/GroupWatch/Header";
 import CameraPanel from "../../components/GroupWatch/CameraPanel";
 import PlayerArea from "../../components/GroupWatch/PlayerArea";
@@ -7,12 +8,17 @@ import ChatPanel from "../../components/GroupWatch/ChatPanel";
 import ParticipantsPanel from "../../components/GroupWatch/ParticipantsPanel";
 import VideoStream from "../../components/GroupWatch/VideoStream";
 import ControlBar from "../../components/GroupWatch/ControlBar";
+import HostControlPanel from "../../components/GroupWatch/HostControlPanel";
 import { useSocket } from "../../components/GroupWatch/hooks/useSocket";
 import { useSync } from "../../components/GroupWatch/hooks/useSync";
 import { useMediaStream } from "../../components/GroupWatch/hooks/useMediaStream";
 
 import { makeId, EMOJI_REACTIONS } from "../../components/GroupWatch/utils";
 import type{ GroupWatchProps, Participant, ChatMessage, Reaction, Movie } from "../../components/GroupWatch/types";
+import { fetchMoviesWithVideos } from "../../services/movieApi";
+import { X } from "lucide-react";
+import { useAuth } from "../../hooks/useAuth";
+import AuthModal from "../../components/AuthModal";
 
 const GroupWatch: React.FC<GroupWatchProps> = ({ 
   movie: propMovie, 
@@ -40,6 +46,17 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   const [playerReady, setPlayerReady] = useState(false);
   const [initialSyncApplied, setInitialSyncApplied] = useState(false);
   const [controlAccessUsers, setControlAccessUsers] = useState<Set<string>>(new Set()); // Users with control access (host always has it)
+  const [showMovieSelector, setShowMovieSelector] = useState(false);
+  const [availableMovies, setAvailableMovies] = useState<Movie[]>([]);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [coHostIds, setCoHostIds] = useState<string[]>([]);
+  const [isLocked, setIsLocked] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [chatEnabled, setChatEnabled] = useState(true);
+  const [currentLayout, setCurrentLayout] = useState('cinema');
+  const [showHostControls, setShowHostControls] = useState(false);
+  const [removedByHost, setRemovedByHost] = useState(false);
+  const [removedMessage, setRemovedMessage] = useState<string | null>(null);
 
   // Refs
   const playerRef = useRef<ReactPlayer>(null);
@@ -50,12 +67,33 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   const isWaitingForInteraction = useRef(false);
   const isProcessingLocalPlayPause = useRef(false);
 
-  // User info
+  // Auth hook
+  const { user, isAuthenticated, logout, updateUser } = useAuth();
+
+  // User info - prioritize displayName prop (which is set from GroupWatchPage)
+  // This ensures we use the name entered by the user or their authenticated name
   const guestId = useRef(`guest_${Math.random().toString(36).slice(2, 9)}`);
   const localUser = useRef({ 
-    id: guestId.current, 
-    name: displayName || `Guest_${makeId(4)}` 
+    id: isAuthenticated && user?.id ? user.id : guestId.current, 
+    name: displayName || (isAuthenticated && user?.name ? user.name : `Guest_${makeId(4)}`)
   });
+
+  // Update localUser name when displayName changes (from GroupWatchPage)
+  useEffect(() => {
+    if (displayName) {
+      localUser.current.name = displayName;
+    } else if (isAuthenticated && user?.name) {
+      localUser.current.name = user.name;
+    }
+    // If we have a socket, tell the server about our chosen display name so all participants see it
+    try {
+      if (displayName && socketRef?.current) {
+        socketRef.current.emit('room:participant:update', { sessionId, name: displayName });
+      }
+    } catch (e) {
+      console.warn('Failed to emit participant:update for displayName', e);
+    }
+  }, [displayName, isAuthenticated, user]);
 
   // Custom hooks
   const mediaStream = useMediaStream();
@@ -122,16 +160,32 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   }
 
   function handleMovieUpdate(movieData: Movie) {
+    console.log('[🎬 MOVIE UPDATE] Received movie update', {
+      currentMovieId: currentMovie.id,
+      newMovieId: movieData.id,
+      currentSrc: currentMovie.src,
+      newSrc: movieData.src,
+    });
+
+    // If it's the same movie, just update properties
     if (movieData.src === currentMovie.src || movieData.id === currentMovie.id) {
+      console.log('[🎬 MOVIE UPDATE] Same movie, updating properties');
       setCurrentMovie(prev => ({ ...prev, ...movieData }));
       return;
     }
     
+    // Different movie - update and reset player
+    console.log('[🎬 MOVIE UPDATE] Different movie detected, switching...');
     setCurrentMovie(movieData);
     if (playerRef.current) {
       playerRef.current.seekTo(0);
       setIsPlaying(false);
     }
+    // Force player to reload with new source
+    setPlayerReady(false);
+    setTimeout(() => {
+      setPlayerReady(true);
+    }, 100);
   }
 
   function handleChatMessage(msg: ChatMessage) {
@@ -697,6 +751,12 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     e.preventDefault();
     if (!messageText.trim() || !socketRef.current) return;
     
+    // Check if chat is enabled
+    if (!chatEnabled) {
+      alert('Chat is currently disabled by the host');
+      return;
+    }
+    
     const msg: ChatMessage = {
       id: `${Date.now()}_${makeId(4)}`,
       userId: localUser.current.id,
@@ -704,8 +764,8 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       text: messageText.trim(),
       at: new Date().toISOString()
     };
-    
-    setMessages(prev => [...prev, msg]);
+
+    // Do not add message locally to avoid duplicates — server will echo and broadcast
     socketRef.current.emit("room:chat:message", { sessionId, message: msg });
     setMessageText("");
   }
@@ -829,6 +889,70 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     globalThis.location.href = "/";
   }
 
+  // Load available movies when movie selector opens
+  useEffect(() => {
+    if (showMovieSelector && availableMovies.length === 0) {
+      const loadMovies = async () => {
+        try {
+          const movies = await fetchMoviesWithVideos();
+          setAvailableMovies(movies as unknown as Movie[]);
+        } catch (error) {
+          console.error('Failed to load movies:', error);
+        }
+      };
+      loadMovies();
+    }
+  }, [showMovieSelector]);
+
+  function handleChangeMovie(selectedMovie: Movie) {
+    // Check authentication - host or authenticated participants can change movie
+    if (!isAuthenticated && !isHost) {
+      console.log('[🎬 CHANGE MOVIE] ⚠️ User not authenticated, showing auth modal');
+      setShowAuthModal(true);
+      setShowMovieSelector(false);
+      return;
+    }
+
+    if (!socketRef.current) {
+      console.log('[🎬 CHANGE MOVIE] ⚠️ Socket not available');
+      return;
+    }
+    
+    console.log('[🎬 CHANGE MOVIE] Changing movie', { 
+      isHost, 
+      isAuthenticated,
+      from: currentMovie.id, 
+      to: selectedMovie.id,
+      userName: localUser.current.name
+    });
+    
+    // Update local movie state
+    setCurrentMovie(selectedMovie);
+    
+    // Reset player state
+    if (playerRef.current) {
+      playerRef.current.seekTo(0);
+      setIsPlaying(false);
+    }
+    
+    // Broadcast movie change to all participants
+    socketRef.current.emit('room:movie:update', {
+      sessionId,
+      movie: selectedMovie,
+    });
+    
+    setShowMovieSelector(false);
+  }
+
+  function handleChangeMovieClick() {
+    // Check if user is authenticated
+    if (!isAuthenticated && !isHost) {
+      setShowAuthModal(true);
+      return;
+    }
+    setShowMovieSelector(true);
+  }
+
   // User interaction handling
   useEffect(() => {
     const handleUserInteraction = () => {
@@ -897,21 +1021,212 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     };
   }, [socketRef]);
 
-  // Calculate participants
-  const allParticipants = [
-    {
-      ...localUser.current,
-      muted: mediaStream.muted,
-      cameraOn: mediaStream.cameraOn,
-      stream: mediaStream.localStream || undefined,
-      socketId: socketRef.current?.id || 'local',
-      isHost
-    },
-    ...participants.filter(p => p.id !== localUser.current.id)
-  ];
+  // Listen for host control socket events
+  useEffect(() => {
+    if (!socketRef.current) return;
+    
+    const socket = socketRef.current;
+    
+    // Host restart
+    const handleRestart = () => {
+      if (playerRef.current) {
+        playerRef.current.seekTo(0);
+        setIsPlaying(false);
+      }
+    };
+    
+    // Host end session
+    const handleEndSession = () => {
+      window.location.href = '/home';
+    };
+    
+    // Host lock/unlock
+    const handleLock = (data: { locked: boolean }) => {
+      setIsLocked(data.locked);
+    };
+    
+    // Host privacy change
+    const handlePrivacy = (data: { isPrivate: boolean }) => {
+      setIsPrivate(data.isPrivate);
+    };
+    
+    // Host chat toggle
+    const handleChatToggle = (data: { enabled: boolean }) => {
+      setChatEnabled(data.enabled);
+    };
+    
+    // Host layout change
+    const handleLayout = (data: { layout: string }) => {
+      setCurrentLayout(data.layout);
+    };
+    
+    // Host fullscreen
+    const handleFullscreen = (data: { enabled: boolean }) => {
+      if (data.enabled && document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen();
+      }
+    };
+    
+    // Host promoted/demoted
+    const handlePromoted = (data: { userId: string }) => {
+      setCoHostIds(prev => [...prev, data.userId]);
+    };
+    
+    const handleDemoted = (data: { userId: string }) => {
+      setCoHostIds(prev => prev.filter(id => id !== data.userId));
+    };
+    
+    // Host removed user
+    const handleRemoved = (data?: any) => {
+      const reason = data?.reason || 'removed_by_host';
+      const msg = reason === 'removed_by_host' ? 'You have been removed by the host' : (data?.message || 'You have been removed from this room');
+      setRemovedMessage(msg);
+      setRemovedByHost(true);
 
-  const participantCount = allParticipants.length;
-  const localParticipant = allParticipants[0];
+      // stop local streams and pause player
+      try {
+        if (playerRef.current) {
+          const internal = (playerRef.current as any).getInternalPlayer?.();
+          if (internal && !internal.paused) internal.pause?.();
+        }
+      } catch (e) { /* ignore */ }
+
+      if (mediaStream.localStream) {
+        try { mediaStream.localStream.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+      }
+
+      // Give user a short moment to read the notice, then leave
+      setTimeout(() => {
+        try {
+          if (socketRef.current) {
+            socketRef.current.emit('room:leave', { sessionId });
+            socketRef.current.disconnect();
+          }
+        } catch (e) {}
+        window.location.href = '/home';
+      }, 3500);
+    };
+    
+    // Host banned user
+    const handleBanned = () => {
+      alert('You have been banned from this room');
+      window.location.href = '/home';
+    };
+    
+    // Host kicked user
+    const handleKicked = () => {
+      alert('You have been kicked from this room');
+      window.location.href = '/home';
+    };
+    
+    // Chat cleared
+    const handleChatCleared = () => {
+      setMessages([]);
+    };
+    
+    // Message deleted
+    const handleMessageDeleted = (data: { messageId: string }) => {
+      setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, isDeleted: true } : m));
+    };
+    
+    // Message pinned
+    const handleMessagePinned = (data: { messageId: string; pinned: boolean }) => {
+      setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, isPinned: data.pinned } : m));
+    };
+    
+    socket.on('room:host:restart', handleRestart);
+    socket.on('room:host:ended', handleEndSession);
+    socket.on('room:host:locked', handleLock);
+    socket.on('room:host:privacy:changed', handlePrivacy);
+    socket.on('room:host:chat:toggled', handleChatToggle);
+    socket.on('room:host:layout:changed', handleLayout);
+    socket.on('room:host:fullscreen', handleFullscreen);
+    socket.on('room:host:promoted', handlePromoted);
+    socket.on('room:host:demoted', handleDemoted);
+    socket.on('room:removed', handleRemoved);
+    socket.on('room:banned', handleBanned);
+    socket.on('room:kicked', handleKicked);
+    socket.on('room:host:chat:cleared', handleChatCleared);
+    socket.on('room:host:message:deleted', handleMessageDeleted);
+    socket.on('room:host:message:pinned', handleMessagePinned);
+    
+    return () => {
+      socket.off('room:host:restart', handleRestart);
+      socket.off('room:host:ended', handleEndSession);
+      socket.off('room:host:locked', handleLock);
+      socket.off('room:host:privacy:changed', handlePrivacy);
+      socket.off('room:host:chat:toggled', handleChatToggle);
+      socket.off('room:host:layout:changed', handleLayout);
+      socket.off('room:host:fullscreen', handleFullscreen);
+      socket.off('room:host:promoted', handlePromoted);
+      socket.off('room:host:demoted', handleDemoted);
+      socket.off('room:removed', handleRemoved);
+      socket.off('room:banned', handleBanned);
+      socket.off('room:kicked', handleKicked);
+      socket.off('room:host:chat:cleared', handleChatCleared);
+      socket.off('room:host:message:deleted', handleMessageDeleted);
+      socket.off('room:host:message:pinned', handleMessagePinned);
+    };
+  }, [socketRef]);
+
+  // Calculate participants - ensure local user is included and not duplicated
+  // Check if local user is already in participants array (from socket)
+  const localUserInParticipants = participants.find(p => p.id === localUser.current.id || p.socketId === socketRef.current?.id);
+  
+  const allParticipants = localUserInParticipants
+    ? participants.map(p => {
+        // Update local user with current media stream state
+        if (p.id === localUser.current.id || p.socketId === socketRef.current?.id) {
+          return {
+            ...p,
+            muted: mediaStream.muted,
+            cameraOn: mediaStream.cameraOn,
+            stream: mediaStream.localStream || undefined,
+            isHost
+          };
+        }
+        return p;
+      })
+    : [
+        // Local user not in participants yet, add it
+        {
+          ...localUser.current,
+          muted: mediaStream.muted,
+          cameraOn: mediaStream.cameraOn,
+          stream: mediaStream.localStream || undefined,
+          socketId: socketRef.current?.id || 'local',
+          isHost
+        },
+        ...participants.filter(p => p.id !== localUser.current.id && p.socketId !== socketRef.current?.id)
+      ];
+
+  // Remove any duplicates based on id or socketId
+  const uniqueParticipants = allParticipants.filter((p, index, self) => 
+    index === self.findIndex(participant => 
+      participant.id === p.id || 
+      (participant.socketId && p.socketId && participant.socketId === p.socketId)
+    )
+  );
+
+  const participantCount = uniqueParticipants.length;
+  const localParticipant = uniqueParticipants.find(p => p.id === localUser.current.id) || uniqueParticipants[0];
+  // If removed by host, render a blocking removed view
+  if (removedByHost) {
+    return (
+      <div className="h-screen w-screen bg-black text-white flex items-center justify-center">
+        <div className="bg-gray-900 border border-red-700 rounded-lg p-8 max-w-lg mx-4 text-center">
+          <h2 className="text-2xl font-bold text-red-400 mb-3">You have been removed</h2>
+          <p className="text-gray-300 mb-6">{removedMessage || 'You have been removed from this session by the host.'}</p>
+          <button
+            onClick={() => { try { if (socketRef.current) { socketRef.current.emit('room:leave', { sessionId }); socketRef.current.disconnect(); } } catch (e) {} window.location.href = '/'; }}
+            className="px-5 py-2 bg-red-500 text-white rounded font-semibold"
+          >
+            Leave
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-screen bg-black text-white flex flex-col overflow-hidden">
@@ -922,7 +1237,24 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         isHost={isHost}
         copied={copied}
         onCopyLink={copySessionLink}
+        onSettingsClick={() => setShowHostControls(true)}
       />
+
+      {/* Removed notice banner */}
+      {removedByHost && (
+        <div className="fixed right-6 top-20 z-[80] w-72 p-3 bg-red-900/95 border border-red-700 rounded-lg shadow-lg">
+          <div className="font-bold text-white">Removed from room</div>
+          <div className="text-sm text-gray-200 mt-1">{removedMessage || 'You have been removed from this session by the host.'}</div>
+          <div className="mt-3 flex justify-end">
+            <button
+              onClick={() => { try { if (socketRef.current) { socketRef.current.emit('room:leave', { sessionId }); socketRef.current.disconnect(); } } catch (e) {} window.location.href = '/home'; }}
+              className="px-3 py-1 bg-white text-red-700 rounded text-sm font-semibold"
+            >
+              Leave now
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <CameraPanel
@@ -954,47 +1286,6 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
             onManualPlay={handleManualPlay}
             playerRef={playerRef}
           />
-
-          {/* Mini participant thumbnails */}
-          <div className="h-12 flex-shrink-0 border-t border-emerald-900/20 bg-black/30 backdrop-blur-sm">
-            <div className="flex items-center justify-center gap-1 p-1 h-full overflow-x-auto">
-              {allParticipants.slice(0, 8).map((participant) => (
-                <div
-                  key={participant.id}
-                  className="relative group rounded-md overflow-hidden bg-gray-900 transition-all duration-200 w-10 h-8 border border-emerald-900/10 flex-shrink-0"
-                >
-                  {participant.cameraOn ? (
-                    <VideoStream
-                      stream={participant.stream}
-                      isLocal={participant.id === localUser.current.id}
-                      cameraOn={participant.cameraOn}
-                      className="w-full h-full"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-emerald-800 to-gray-800">
-                      <span className="text-[10px] font-bold text-white">
-                        {participant.name[0].toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-0.5">
-                    <div className="flex items-center justify-center">
-                      {participant.muted && <span className="text-red-400 text-xs">🔇</span>}
-                      {participant.isHost && (
-                        <span className="text-[6px] text-emerald-400 font-bold ml-0.5">H</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {allParticipants.length > 8 && (
-                <div className="text-[8px] text-emerald-400 px-1">
-                  +{allParticipants.length - 8}
-                </div>
-              )}
-            </div>
-          </div>
         </div>
 
         {showChat && (
@@ -1002,6 +1293,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
             messages={messages}
             messageText={messageText}
             localUserId={localUser.current.id}
+            participants={uniqueParticipants}
             onMessageChange={setMessageText}
             onSendMessage={handleSendMessage}
           />
@@ -1009,11 +1301,13 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
 
         {showParticipants && (
           <ParticipantsPanel
-            participants={allParticipants}
+            participants={uniqueParticipants}
             localUserId={localUser.current.id}
             isHost={isHost}
             onGrantControlAccess={grantControlAccess}
             onRevokeControlAccess={revokeControlAccess}
+            socketRef={socketRef}
+            sessionId={sessionId}
           />
         )}
       </div>
@@ -1027,6 +1321,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         showEmojiPicker={showEmojiPicker}
         emojiPickerRef={emojiPickerRef}
         participantCount={participantCount}
+        isHost={isHost}
+        isCoHost={coHostIds.includes(localUser.current.id)}
+        onChangeMovie={handleChangeMovieClick}
+        isAuthenticated={isAuthenticated}
+        onToggleHostControls={() => setShowHostControls(!showHostControls)}
         onToggleMute={() => {
           mediaStream.toggleMute();
           socketRef.current?.emit('room:status', {
@@ -1055,6 +1354,91 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
           {mediaStream.mediaError}
         </div>
       )}
+
+      {/* Movie Selection Modal */}
+      {showMovieSelector && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-gray-900 rounded-2xl border border-[#00bfa6]/30 max-w-6xl w-full max-h-[90vh] flex flex-col"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-[#00bfa6]/20">
+              <h2 className="text-2xl font-bold text-white">Change Movie</h2>
+              <button
+                onClick={() => setShowMovieSelector(false)}
+                className="w-10 h-10 rounded-full bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Movie Grid */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {availableMovies.length === 0 ? (
+                <div className="text-center py-12 text-gray-400">Loading movies...</div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {availableMovies.map((movie) => (
+                    <motion.button
+                      key={movie.id}
+                      onClick={() => handleChangeMovie(movie)}
+                      className="group relative aspect-[2/3] rounded-xl overflow-hidden bg-gray-800 hover:border-2 hover:border-[#00bfa6] transition-all"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <img
+                        src={movie.poster}
+                        alt={movie.title}
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <div className="absolute bottom-0 left-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <h3 className="text-white font-semibold text-sm line-clamp-2">{movie.title}</h3>
+                        <p className="text-gray-300 text-xs mt-1">{movie.year}</p>
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Auth Modal for Change Movie */}
+      <AuthModal 
+        isOpen={showAuthModal} 
+        onClose={() => {
+          setShowAuthModal(false);
+          // After successful auth, open movie selector if user is now authenticated
+          if (isAuthenticated) {
+            setTimeout(() => {
+              setShowMovieSelector(true);
+            }, 100);
+          }
+        }} 
+      />
+
+      {/* Host Control Panel */}
+      <HostControlPanel
+        isHost={isHost}
+        isCoHost={coHostIds.includes(localUser.current.id)}
+        sessionId={sessionId}
+        participants={allParticipants}
+        isOpen={showHostControls}
+        onClose={() => setShowHostControls(false)}
+        onLogout={() => { logout(); window.location.href = '/'; }}
+        onUpdateProfile={(data) => {
+          // update local store
+          updateUser({ name: data.name, email: data.email, avatar: data.avatar });
+          // emit participant update
+          if (socketRef.current) socketRef.current.emit('room:participant:update', { sessionId, name: data.name, avatar: data.avatar });
+        }}
+        socketRef={socketRef}
+        currentUser={{ name: localUser.current.name, email: user?.email, avatar: user?.avatar }}
+      />
 
       <style>{`
         @keyframes reactionFloat {

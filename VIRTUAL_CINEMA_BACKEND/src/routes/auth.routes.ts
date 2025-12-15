@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { verifyToken, getProfile, register, login } from '../controllers/auth.controller';
+import { verifyToken, getProfile, register, login, refresh, logout } from '../controllers/auth.controller';
 
 const router = Router();
 
@@ -10,6 +10,12 @@ router.post('/register', register);
 
 // POST /auth/login
 router.post('/login', login);
+
+// POST /auth/refresh
+router.post('/refresh', refresh);
+
+// POST /auth/logout
+router.post('/logout', logout);
 
 // POST /auth/verify-token
 router.post('/verify-token', verifyToken);

@@ -9,6 +9,8 @@ import {
   Users,
   MessageCircle,
   Popcorn,
+  Film,
+  Settings,
 } from "lucide-react";
 
 // Move ControlButton outside of ControlBar component
@@ -51,6 +53,9 @@ interface ControlBarProps {
   showEmojiPicker: boolean;
   emojiPickerRef: React.RefObject<HTMLDivElement>;
   participantCount: number;
+  isHost: boolean;
+  isAuthenticated?: boolean;
+  isCoHost?: boolean;
   onToggleMute: () => void;
   onToggleCamera: () => void;
   onToggleCameraPanel: () => void;
@@ -59,6 +64,8 @@ interface ControlBarProps {
   onToggleEmojiPicker: () => void;
   onEmojiReaction: (emoji: string) => void;
   onLeave: () => void;
+  onChangeMovie?: () => void;
+  onToggleHostControls?: () => void;
   emojiReactions: string[];
 }
 
@@ -71,6 +78,9 @@ const ControlBar: React.FC<ControlBarProps> = ({
   showEmojiPicker,
   emojiPickerRef,
   participantCount,
+  isHost,
+  isAuthenticated,
+  isCoHost,
   onToggleMute,
   onToggleCamera,
   onToggleCameraPanel,
@@ -79,6 +89,8 @@ const ControlBar: React.FC<ControlBarProps> = ({
   onToggleEmojiPicker,
   onEmojiReaction,
   onLeave,
+  onChangeMovie,
+  onToggleHostControls,
   emojiReactions,
 }) => {
   return (
@@ -86,7 +98,8 @@ const ControlBar: React.FC<ControlBarProps> = ({
       <div className="flex items-center justify-between max-w-3xl mx-auto">
         <div className="flex items-center gap-1 text-emerald-400">
           <Popcorn size={12} />
-          <span className="text-xs font-medium">{participantCount} in cinema</span>
+          <span className="text-xs font-medium">in cinema</span>
+          <span className="text-xs font-semibold">{participantCount}</span>
         </div>
 
         <div className="flex items-center gap-1">
@@ -132,6 +145,22 @@ const ControlBar: React.FC<ControlBarProps> = ({
         </div>
 
         <div className="flex items-center gap-1">
+          {/* Show Change Movie button for host or authenticated users */}
+          {(isHost || isAuthenticated) && onChangeMovie && (
+            <ControlButton
+              onClick={onChangeMovie}
+              icon={Film}
+              text="Change Movie"
+            />
+          )}
+          {/* Host Controls Button */}
+          {(isHost || isCoHost) && onToggleHostControls && (
+            <ControlButton
+              onClick={onToggleHostControls}
+              icon={Settings}
+              text="Settings"
+            />
+          )}
           <ControlButton
             active={showCameraPanel}
             onClick={onToggleCameraPanel}

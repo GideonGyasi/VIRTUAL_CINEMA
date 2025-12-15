@@ -6,15 +6,18 @@ export interface AuthenticatedRequest extends Request {
     email?: string;
     name?: string;
     photoURL?: string;
+    role?: 'USER' | 'HOST' | 'ADMIN';
+    premium?: boolean;
   };
 }
 
 export interface SocketUser {
   id: string;
-  username: string;
-  email: string;
+  username?: string;
   photoURL?: string;
   avatar?: string;
+  role?: 'USER' | 'HOST' | 'ADMIN';
+  premium?: boolean;
 }
 
 export interface RoomData {
