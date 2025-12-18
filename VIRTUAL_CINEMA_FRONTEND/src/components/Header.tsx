@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Download, History, User, Menu, LogOut, LogIn } from 'lucide-react';
+import { Search, Download, History, User, Menu, LogOut} from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 interface HeaderProps {
