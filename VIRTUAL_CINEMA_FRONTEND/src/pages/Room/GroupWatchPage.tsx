@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import type { Movie as GWMovie } from '../../components/GroupWatch/types';
 import { useParams, useLocation } from 'react-router-dom';
 import GroupWatch from './GroupWatch';
 import { mockMovies } from '../../data/movies';
 import { useMovieStore } from '../../store/movieStore';
-import { getPlayableVideoUrl, fetchMoviesFromTmdb, fetchMoviesFromOmdb } from '../../services/movieApi';
+import { getPlayableVideoUrl} from '../../services/movieApi';
 import { useAuth } from '../../hooks/useAuth';
-import AuthModal from '../../components/AuthModal';
+
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -58,8 +59,12 @@ function extractTitleFromUrl(url: string): string {
   return 'Movie';
 }
 
+// Domain type for movies used by GroupWatch
+// Use the shared Movie type from GroupWatch component (ensures compatibility)
+type Movie = GWMovie & { genre?: string[]; cast?: string[]; director?: string };
+
 // NEW: Function to get movie by ID from various sources
-async function getMovieById(movieId: string): Promise<any> {
+async function getMovieById(movieId: string): Promise<Movie | null> {
   console.log(`🔍 Fetching movie by ID: ${movieId}`);
   
   try {
@@ -70,29 +75,39 @@ async function getMovieById(movieId: string): Promise<any> {
         const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY;
         if (TMDB_API_KEY) {
           const response = await fetch(
-            `https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=en-US`
+            `https://api.themoviedb.org/3/movie/${movieId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=credits`
           );
-          
+
           if (response.ok) {
-            const tmdbMovie = await response.json();
-            console.log('✅ Found movie in TMDb:', tmdbMovie.title);
-            
+            const data = (await response.json()) as Record<string, unknown>;
+            console.log('✅ Found movie in TMDb:', data.title);
+
+            const genres: string[] = Array.isArray(data.genres)
+              ? (data.genres as unknown[]).map(g => (typeof g === 'object' && g ? String((g as Record<string, unknown>).name ?? '') : String(g)))
+              : [];
+
+            const credits = data.credits as Record<string, unknown> | undefined;
+            let director = '';
+            if (credits && Array.isArray(credits.crew)) {
+              const crew = credits.crew as unknown[];
+              const dir = crew.find(c => typeof c === 'object' && (c as Record<string, unknown>).job === 'Director');
+              if (dir && typeof dir === 'object') director = String((dir as Record<string, unknown>).name ?? '');
+            }
+
             return {
-              id: String(tmdbMovie.id),
-              title: tmdbMovie.title,
-              poster: tmdbMovie.poster_path 
-                ? `https://image.tmdb.org/t/p/w500${tmdbMovie.poster_path}` 
-                : 'https://picsum.photos/800/1200',
-              year: parseInt(tmdbMovie.release_date?.split('-')[0] || '2024'),
-              description: tmdbMovie.overview || 'No description available',
-              genre: tmdbMovie.genres?.map((g: any) => g.name) || [],
-              duration: tmdbMovie.runtime || 120,
-              rating: tmdbMovie.vote_average || 7.5,
+              id: String(data.id ?? movieId),
+              title: String(data.title ?? extractTitleFromUrl(String(data.homepage ?? ''))),
+              poster: data.poster_path ? `https://image.tmdb.org/t/p/w500${String(data.poster_path)}` : 'https://picsum.photos/800/1200',
+              year: parseInt(String((data.release_date as string | undefined)?.split('-')[0] ?? '2024')),
+              description: String(data.overview ?? 'No description available'),
+              genre: genres,
+              duration: Number(data.runtime ?? 120),
+              rating: Number(data.vote_average ?? 7.5),
               trailer: getPlayableVideoUrl(movieId),
               cast: [],
-              director: tmdbMovie.credits?.crew?.find((c: any) => c.job === 'Director')?.name || '',
-              src: getPlayableVideoUrl(movieId)
-            };
+              director,
+              src: getPlayableVideoUrl(movieId),
+            } as Movie;
           }
         }
       } catch (tmdbError) {
@@ -109,26 +124,28 @@ async function getMovieById(movieId: string): Promise<any> {
           const response = await fetch(
             `https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${movieId}&plot=short`
           );
-          
+
           if (response.ok) {
-            const omdbMovie = await response.json();
-            if (omdbMovie.Response === 'True') {
-              console.log('✅ Found movie in OMDB:', omdbMovie.Title);
-              
+            const data = (await response.json()) as Record<string, unknown>;
+            if (String(data.Response ?? '') === 'True') {
+              console.log('✅ Found movie in OMDB:', data.Title);
+              const genre = typeof data.Genre === 'string' ? data.Genre.split(', ').map(g => g.trim()) : [];
+              const cast = typeof data.Actors === 'string' ? data.Actors.split(',').map(c => c.trim()) : [];
+
               return {
-                id: omdbMovie.imdbID,
-                title: omdbMovie.Title,
-                poster: omdbMovie.Poster !== 'N/A' ? omdbMovie.Poster : 'https://picsum.photos/800/1200',
-                year: parseInt(omdbMovie.Year) || 2024,
-                description: omdbMovie.Plot || 'No description available',
-                genre: omdbMovie.Genre?.split(', ') || [],
-                duration: parseInt(omdbMovie.Runtime?.replace(' min', '') || '120'),
-                rating: parseFloat(omdbMovie.imdbRating) || 7.5,
+                id: String(data.imdbID ?? movieId),
+                title: String(data.Title ?? extractTitleFromUrl(String(data.Website ?? ''))),
+                poster: data.Poster && String(data.Poster) !== 'N/A' ? String(data.Poster) : 'https://picsum.photos/800/1200',
+                year: parseInt(String(data.Year ?? '2024')) || 2024,
+                description: String(data.Plot ?? 'No description available'),
+                genre,
+                duration: parseInt(String((data.Runtime as string | undefined)?.replace(' min', '') ?? '120')) || 120,
+                rating: parseFloat(String(data.imdbRating ?? '7.5')) || 7.5,
                 trailer: getPlayableVideoUrl(movieId),
-                cast: omdbMovie.Actors?.split(', ') || [],
-                director: omdbMovie.Director || '',
-                src: getPlayableVideoUrl(movieId)
-              };
+                cast,
+                director: String(data.Director ?? ''),
+                src: getPlayableVideoUrl(movieId),
+              } as Movie;
             }
           }
         }
@@ -145,59 +162,50 @@ async function getMovieById(movieId: string): Promise<any> {
 }
 
 // NEW: Enhanced movie processing for participants
-const processMovieForProxy = (movieData: any, isHost: boolean = false) => {
+const processMovieForProxy = (movieData: Partial<Movie> | null, isHost: boolean = false): Movie | null => {
   if (!movieData) return null;
-  
+
+  const fields = Object.keys(movieData as Record<string, unknown>);
   console.log(`🎬 Processing movie for ${isHost ? 'host' : 'participant'}:`, {
     id: movieData.id,
     title: movieData.title,
     originalSrc: movieData.src,
     originalTrailer: movieData.trailer,
-    fields: Object.keys(movieData)
+    fields
   });
-  
-  // Create a clean copy
-  const processed = { ...movieData };
-  
-  // Ensure all required fields exist
-  processed.id = processed.id || 'unknown';
-  processed.title = processed.title || extractTitleFromUrl(processed.src || processed.trailer);
-  processed.poster = processed.poster || '';
-  processed.year = processed.year || new Date().getFullYear();
-  processed.description = processed.description || '';
-  processed.rating = processed.rating || 0;
-  processed.duration = processed.duration || 120;
-  processed.genre = processed.genre || [];
-  processed.cast = processed.cast || [];
-  processed.director = processed.director || '';
-  
-  // Ensure src and trailer are set
-  if (!processed.src && processed.trailer) {
-    processed.src = processed.trailer;
-  } else if (!processed.src) {
-    processed.src = getPlayableVideoUrl(processed.id);
-  }
-  
-  if (!processed.trailer && processed.src) {
-    processed.trailer = processed.src;
-  }
-  
-  // Process src for proxy if needed
+
+  const id = String(movieData.id ?? 'unknown');
+  const src = String(movieData.src ?? movieData.trailer ?? getPlayableVideoUrl(id));
+
+  const processed: Movie = {
+    id,
+    title: String(movieData.title ?? extractTitleFromUrl(src)),
+    poster: String(movieData.poster ?? ''),
+    year: Number(movieData.year ?? new Date().getFullYear()),
+    description: String(movieData.description ?? ''),
+    rating: Number(movieData.rating ?? 0),
+    duration: Number(movieData.duration ?? 120),
+    genre: Array.isArray(movieData.genre) ? (movieData.genre as string[]) : [],
+    cast: Array.isArray(movieData.cast) ? (movieData.cast as string[]) : [],
+    director: String(movieData.director ?? ''),
+    src,
+    trailer: String(movieData.trailer ?? src),
+  };
+
   const srcStr = String(processed.src || '');
   const isYouTube = /youtube\.com|youtu\.be/.test(srcStr);
   const alreadyProxied = srcStr.startsWith(`${API_BASE}/proxy/video`) || srcStr.includes('/proxy/video?url=');
-  
+
   if (srcStr && srcStr.startsWith('http') && !isYouTube && !alreadyProxied) {
     processed.src = `${API_BASE}/proxy/video?url=${encodeURIComponent(srcStr)}`;
     console.log('🔄 Proxied URL:', processed.src.substring(0, 100) + '...');
   }
-  
-  // Process trailer similarly if different from src
+
   const trailerStr = String(processed.trailer || '');
   if (trailerStr && trailerStr !== srcStr && trailerStr.startsWith('http') && !isYouTube && !trailerStr.includes('/proxy/video')) {
     processed.trailer = `${API_BASE}/proxy/video?url=${encodeURIComponent(trailerStr)}`;
   }
-  
+
   return processed;
 };
 
@@ -207,7 +215,7 @@ const GroupWatchPage: React.FC = () => {
   const q = useQuery();
   const movieId = q.get('movie') || '';
   
-  const [movie, setMovie] = useState<any>(null);
+  const [movie, setMovie] = useState<Movie | null>(null);
   const [loading, setLoading] = useState(true);
   const [isHost, setIsHost] = useState(false);
   const [displayName, setDisplayName] = useState<string | null>(null);
@@ -240,7 +248,7 @@ const GroupWatchPage: React.FC = () => {
         setShowNameInput(true);
       }
     }
-  }, [isAuthenticated, user, isHost, sessionId]);
+  }, [isAuthenticated, user, isHost, sessionId, displayName]);
 
   useEffect(() => {
     const loadMovie = async () => {
@@ -248,7 +256,7 @@ const GroupWatchPage: React.FC = () => {
         console.log('🔍 GroupWatchPage - Loading movie for ID:', movieId);
         
         // 1. Check state from navigation (this is where HOST comes from)
-        const stateMovie = (location.state as any)?.movie;
+        const stateMovie = (location.state as Record<string, unknown> | undefined)?.movie as Partial<Movie> | undefined;
         if (stateMovie) {
           console.log('📦 Using movie from navigation state (HOST PATH)');
           setIsHost(true);
@@ -264,7 +272,7 @@ const GroupWatchPage: React.FC = () => {
         }
 
         // 2. Check in local store
-        let foundMovie = (movies as any[]).find((m) => String(m.id) === String(movieId));
+        let foundMovie = (movies as unknown as Movie[]).find((m) => String(m.id) === String(movieId));
         if (foundMovie) {
           console.log('🏪 Found movie in local store');
           const processedMovie = processMovieForProxy(foundMovie, false);
@@ -274,7 +282,7 @@ const GroupWatchPage: React.FC = () => {
         }
 
         // 3. Check in mock movies
-        foundMovie = mockMovies.find((m) => m.id === movieId);
+        foundMovie = (mockMovies as Movie[]).find((m) => m.id === movieId);
         if (foundMovie) {
           console.log('🎬 Found movie in mock data');
           const processedMovie = processMovieForProxy(foundMovie, false);
@@ -414,8 +422,8 @@ const GroupWatchPage: React.FC = () => {
     duration: movie.duration,
     hasDescription: !!movie.description,
     hasPoster: !!movie.poster,
-    src: movie.src?.substring(0, 80) + (movie.src?.length > 80 ? '...' : ''),
-    trailer: movie.trailer?.substring(0, 80) + (movie.trailer?.length > 80 ? '...' : ''),
+    src: movie.src ? movie.src.substring(0, 80) + (movie.src.length > 80 ? '...' : '') : '',
+    trailer: movie.trailer ? movie.trailer.substring(0, 80) + (movie.trailer.length > 80 ? '...' : '') : '',
     isProxied: movie.src?.includes('/proxy/video'),
     genre: movie.genre,
     cast: movie.cast?.slice(0, 3),

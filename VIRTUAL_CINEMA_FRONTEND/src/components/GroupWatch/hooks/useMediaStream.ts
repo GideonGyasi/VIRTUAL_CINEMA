@@ -34,9 +34,7 @@ export const useMediaStream = () => {
       });
 
       streamRef.current = stream;
-      setLocalStream(stream);
-      setCameraInitialized(true);
-
+      
       // Apply current state to tracks
       stream.getAudioTracks().forEach(track => {
         track.enabled = !muted;
@@ -45,18 +43,32 @@ export const useMediaStream = () => {
       stream.getVideoTracks().forEach(track => {
         track.enabled = cameraOn;
       });
+
+      return stream;
     } catch (error) {
       console.error("Error accessing media devices:", error);
-      setMediaError("Cannot access camera or microphone.");
+      throw error;
     }
   }, [muted, cameraOn]);
 
   // Initialize ONCE (Strict-Mode safe)
   useEffect(() => {
     if (initializedRef.current) return;
-    initializedRef.current = true;
 
-    initializeMediaStream();
+    const init = async () => {
+      initializedRef.current = true;
+      try {
+        const stream = await initializeMediaStream();
+        setLocalStream(stream);
+        setCameraInitialized(true);
+      } catch (error) {
+        console.log(error);
+        setMediaError("Cannot access camera or microphone.");
+        setCameraInitialized(false);
+      }
+    };
+
+    init();
   }, [initializeMediaStream]);
 
   // Sync camera state
@@ -81,14 +93,22 @@ export const useMediaStream = () => {
     setMuted(prev => !prev);
   };
 
-  const toggleCamera = async () => {
+  const toggleCamera = useCallback(async () => {
     const next = !cameraOn;
     setCameraOn(next);
 
     if (!streamRef.current && next) {
-      await initializeMediaStream();
+      try {
+        const stream = await initializeMediaStream();
+        setLocalStream(stream);
+        setCameraInitialized(true);
+      } catch (error) {
+        console.log(error);
+        setMediaError("Cannot access camera or microphone.");
+        setCameraInitialized(false);
+      }
     }
-  };
+  }, [cameraOn, initializeMediaStream]);
 
   return {
     localStream,
@@ -100,6 +120,17 @@ export const useMediaStream = () => {
     toggleCamera,
     setMuted,
     setCameraOn,
-    initializeMediaStream,
+    initializeMediaStream: async () => {
+      try {
+        const stream = await initializeMediaStream();
+        setLocalStream(stream);
+        setCameraInitialized(true);
+        return stream;
+      } catch (error) {
+        setMediaError("Cannot access camera or microphone.");
+        setCameraInitialized(false);
+        throw error;
+      }
+    },
   };
 };

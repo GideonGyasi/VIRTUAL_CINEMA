@@ -59,7 +59,7 @@ const VideoStream: React.FC<VideoStreamProps> = ({
         <div className="absolute bottom-0 left-0 right-0 p-1.5 bg-gradient-to-t from-black/90 via-black/60 to-transparent">
           <AudioVisualizer 
             stream={audioStream} 
-            isActive={!muted && hasAudio}
+          isActive={!muted && !!hasAudio}
             className="h-6"
           />
         </div>

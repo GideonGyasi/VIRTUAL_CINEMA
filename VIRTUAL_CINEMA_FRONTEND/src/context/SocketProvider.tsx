@@ -1,28 +1,10 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
+import React, { useEffect, useState } from 'react';
+import { io } from 'socket.io-client';
 import { useAuth } from '../hooks/useAuth';
+import { SocketContext } from './socketContext';
+import type { SocketContextType } from './socketContext';
+import type { Socket } from 'socket.io-client';
 import type { Message, SyncEvent } from '../types/room';
-
-interface SocketContextType {
-  socket: Socket | null;
-  isConnected: boolean;
-  joinRoom: (roomId: string) => void;
-  leaveRoom: () => void;
-  sendMessage: (message: string) => void;
-  sendSyncEvent: (event: SyncEvent) => void;
-  onMessage: (callback: (message: Message) => void) => void;
-  onSyncEvent: (callback: (event: SyncEvent) => void) => void;
-}
-
-const SocketContext = createContext<SocketContextType | null>(null);
-
-export const useSocket = () => {
-  const context = useContext(SocketContext);
-  if (!context) {
-    throw new Error('useSocket must be used within a SocketProvider');
-  }
-  return context;
-};
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -40,18 +22,27 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
       auth: { token },
     });
 
-    newSocket.on('connect', () => {
+    // Set state only when the socket actually connects to avoid synchronous setState in the effect body
+    const handleConnect = () => {
       setIsConnected(true);
-    });
+      setSocket(newSocket);
+    };
 
-    newSocket.on('disconnect', () => {
+    const handleDisconnect = () => {
       setIsConnected(false);
-    });
+    };
 
-    setSocket(newSocket);
+    newSocket.on('connect', handleConnect);
+    newSocket.on('disconnect', handleDisconnect);
 
     return () => {
-      newSocket.close();
+      // Cleanup listeners and close socket
+      newSocket.off('connect', handleConnect);
+      newSocket.off('disconnect', handleDisconnect);
+      try { newSocket.close(); } catch (e) { 
+        console.log(e); /* ignore */ }
+      setSocket(null);
+      setIsConnected(false);
     };
   }, [token]);
 

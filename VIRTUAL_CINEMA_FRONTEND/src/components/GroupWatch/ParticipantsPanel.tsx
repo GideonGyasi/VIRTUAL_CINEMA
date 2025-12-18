@@ -4,12 +4,14 @@ import AvatarPicker, { AVATAR_PRESETS, type AvatarOption } from "./AvatarPicker"
 import type { Participant } from "./types";
 import type { Socket } from "socket.io-client";
 
-/* ---- Socket event typing (optional but clean) ---- */
+/* ---- Socket event typing ---- */
+type ParticipantUpdatePayload = {
+  sessionId: string | null;
+  avatar: string;
+};
+
 interface ClientToServerEvents {
-  "room:participant:update": {
-    sessionId: string | null;
-    avatar: string;
-  };
+  "room:participant:update": (payload: ParticipantUpdatePayload) => void;
 }
 
 interface ParticipantsPanelProps {
@@ -32,8 +34,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   sessionId,
 }) => {
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
-  const [editingParticipant, setEditingParticipant] =
-    useState<Participant | null>(null);
+  const [editingParticipant, setEditingParticipant] = useState<Participant | null>(null);
 
   const openAvatarPicker = (participant: Participant) => {
     setEditingParticipant(participant);
@@ -50,11 +51,14 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
 
     const avatarData = JSON.stringify(avatarOption);
 
-    socketRef.current.emit("room:participant:update", {
+    // Explicitly type the payload
+    const payload: ParticipantUpdatePayload = {
       sessionId: sessionId ?? null,
       avatar: avatarData,
-    });
+    };
 
+    // Use the properly typed socket
+    socketRef.current.emit("room:participant:update", payload);
     closeAvatarPicker();
   };
 
@@ -96,10 +100,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
     }
   };
 
-  const handleToggleControl = (
-    participant: Participant,
-    e: React.MouseEvent
-  ) => {
+  const handleToggleControl = (participant: Participant, e: React.MouseEvent) => {
     e.stopPropagation();
 
     if (participant.hasControlAccess) {
@@ -120,8 +121,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
       <div className="p-2 space-y-1 overflow-auto max-h-full">
         {participants.map((participant) => {
           const isLocalUser = participant.id === localUserId;
-          const canManageControl =
-            isHost && !isLocalUser && !participant.isHost;
+          const canManageControl = isHost && !isLocalUser && !participant.isHost;
 
           return (
             <div
@@ -172,6 +172,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                 <button
                   onClick={(e) => handleToggleControl(participant, e)}
                   className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-emerald-900/30 rounded"
+                  title={participant.hasControlAccess ? "Revoke control" : "Grant control"}
                 >
                   {participant.hasControlAccess ? (
                     <UserX size={14} className="text-yellow-400" />
@@ -184,6 +185,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
               <button
                 className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-gray-800 rounded"
                 onClick={() => openAvatarPicker(participant)}
+                title="Change avatar"
               >
                 {renderAvatarPreview(participant.avatar)}
               </button>

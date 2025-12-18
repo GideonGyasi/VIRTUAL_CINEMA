@@ -1,5 +1,5 @@
 import prisma from '../prisma/client';
-import { RoomData, MessageData, SocketUser } from '../types';
+import { RoomData, MessageData } from '../types';
 import logger from '../utils/logger';
 
 export class RoomService {
@@ -10,25 +10,22 @@ export class RoomService {
     hostId: string
   ): Promise<RoomData> {
     try {
+      // Create room using schema fields (name/movieId/isPrivate)
       const room = await prisma.room.create({
         data: {
-          title,
-          youtubeUrl,
-          privacy,
+          name: title,
+          movieId: youtubeUrl,
+          isPrivate: privacy === 'private',
           hostId,
         },
         include: {
-          host: true,
-          participants: {
-            include: {
-              user: true,
-            },
-          },
+          participants: true,
+          messages: true,
         },
       });
 
-      // Add host as first participant
-      await prisma.participant.create({
+      // Add host as first participant (RoomParticipant model)
+      await prisma.roomParticipant.create({
         data: {
           roomId: room.id,
           userId: hostId,
@@ -37,7 +34,13 @@ export class RoomService {
 
       logger.info(`Room created: ${room.id} by user ${hostId}`);
 
-      return this.formatRoomData(room);
+      // Re-fetch with latest included relations for formatting
+      const fullRoom = await prisma.room.findUnique({
+        where: { id: room.id },
+        include: { participants: true, messages: true },
+      });
+
+      return this.formatRoomData(fullRoom);
     } catch (error) {
       logger.error('Error creating room', error);
       throw error;
@@ -49,16 +52,8 @@ export class RoomService {
       const room = await prisma.room.findUnique({
         where: { id: roomId },
         include: {
-          host: true,
-          participants: {
-            include: {
-              user: true,
-            },
-          },
+          participants: true,
           messages: {
-            include: {
-              user: true,
-            },
             orderBy: {
               createdAt: 'asc',
             },
@@ -78,21 +73,16 @@ export class RoomService {
   static async getPublicRooms(): Promise<RoomData[]> {
     try {
       const rooms = await prisma.room.findMany({
-        where: { privacy: 'public' },
+        where: { isPrivate: false },
         include: {
-          host: true,
-          participants: {
-            include: {
-              user: true,
-            },
-          },
+          participants: true,
         },
         orderBy: {
           createdAt: 'desc',
         },
       });
 
-      return rooms.map(room => this.formatRoomData(room));
+      return Promise.all(rooms.map(async room => this.formatRoomData(room)));
     } catch (error) {
       logger.error('Error getting public rooms', error);
       throw error;
@@ -102,7 +92,7 @@ export class RoomService {
   static async addParticipant(roomId: string, userId: string): Promise<void> {
     try {
       // Check if participant already exists
-      const existingParticipant = await prisma.participant.findUnique({
+      const existingParticipant = await prisma.roomParticipant.findUnique({
         where: {
           roomId_userId: {
             roomId,
@@ -112,7 +102,7 @@ export class RoomService {
       });
 
       if (!existingParticipant) {
-        await prisma.participant.create({
+        await prisma.roomParticipant.create({
           data: {
             roomId,
             userId,
@@ -128,7 +118,7 @@ export class RoomService {
 
   static async removeParticipant(roomId: string, userId: string): Promise<void> {
     try {
-      await prisma.participant.deleteMany({
+      await prisma.roomParticipant.deleteMany({
         where: {
           roomId,
           userId,
@@ -143,14 +133,15 @@ export class RoomService {
 
   static async addMessage(roomId: string, userId: string, message: string): Promise<MessageData> {
     try {
+      // Resolve user name/email for message snapshot
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+
       const messageData = await prisma.message.create({
         data: {
           roomId,
           userId,
-          message,
-        },
-        include: {
-          user: true,
+          userName: user?.name || 'Unknown',
+          content: message,
         },
       });
 
@@ -161,12 +152,12 @@ export class RoomService {
         roomId: messageData.roomId,
         userId: messageData.userId,
         user: {
-          id: messageData.user.id,
-          name: messageData.user.name,
-          email: messageData.user.email,
-          photoURL: messageData.user.photoURL || undefined,
+          id: user?.id || userId,
+          name: user?.name || 'Unknown',
+          email: user?.email || undefined,
+          photoURL: user?.photoURL || undefined,
         },
-        message: messageData.message,
+        message: messageData.content,
         createdAt: messageData.createdAt,
       };
     } catch (error) {
@@ -175,25 +166,36 @@ export class RoomService {
     }
   }
 
-  private static formatRoomData(room: any): RoomData {
+  private static async formatRoomData(room: any): Promise<RoomData> {
+    // Normalize DB fields to public API shape (title, youtubeUrl, privacy string)
+    const hostUser = room.hostId ? await prisma.user.findUnique({ where: { id: room.hostId } }) : null;
+
+    // Resolve participant users in batch
+    const participantUserIds = (room.participants || []).map((p: any) => p.userId).filter(Boolean);
+    const participantUsers = participantUserIds.length > 0 ? await prisma.user.findMany({ where: { id: { in: participantUserIds } } }) : [];
+    const participantsMap = new Map(participantUsers.map(u => [u.id, u]));
+
     return {
       id: room.id,
-      title: room.title,
-      youtubeUrl: room.youtubeUrl,
-      privacy: room.privacy,
-      hostId: room.hostId,
+      title: room.name || '',
+      youtubeUrl: room.movieId || '',
+      privacy: room.isPrivate ? 'private' : 'public',
+      hostId: room.hostId || '',
       host: {
-        id: room.host.id,
-        name: room.host.name,
-        email: room.host.email,
-        photoURL: room.host.photoURL || undefined,
+        id: hostUser?.id || '',
+        name: hostUser?.name || '',
+        email: hostUser?.email || '',
+        photoURL: hostUser?.photoURL || undefined,
       },
-      participants: room.participants.map((p: any) => ({
-        id: p.user.id,
-        name: p.user.name,
-        email: p.user.email,
-        photoURL: p.user.photoURL || undefined,
-      })),
+      participants: (room.participants || []).map((p: any) => {
+        const u = participantsMap.get(p.userId);
+        return {
+          id: p.userId,
+          name: u?.name || 'Guest',
+          email: u?.email || '',
+          photoURL: u?.photoURL || undefined,
+        };
+      }),
       createdAt: room.createdAt,
     };
   }

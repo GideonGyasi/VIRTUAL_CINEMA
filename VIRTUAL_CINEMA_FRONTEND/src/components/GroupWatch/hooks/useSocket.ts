@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { SOCKET_URL } from "../utils";
-import type{ Participant, ChatMessage, Movie } from "../types";
+import type{ Participant, ChatMessage, Movie, RoomSyncData, VideoSyncData, EmojiReactionData } from "../types";
 
 interface UseSocketProps {
   sessionId: string;
@@ -11,17 +11,18 @@ interface UseSocketProps {
   isHost: boolean;
   playerReady: boolean;
   initialSyncApplied: boolean;
-  onRoomSync: (data: unknown) => void;
+  onRoomSync: (data: RoomSyncData) => void;
   onMovieUpdate: (movieData: Movie) => void;
   onParticipantsUpdate: (data: Participant[]) => void;
   onChatMessage: (msg: ChatMessage) => void;
-  onEmojiReaction: (reactionData: unknown) => void;
+  onEmojiReaction: (reactionData: EmojiReactionData) => void;
   onVideoPlay: (data: { time: number; at: number }) => void;
   onVideoPause: (data: { time: number; at: number }) => void;
   onVideoSeek: (data: { time: number; at: number }) => void;
-  onVideoSync: (data: unknown) => void;
+  onVideoSync: (data: VideoSyncData) => void;
   onParticipantJoined: (participant: Participant) => void;
-  onDirectSync: (data: unknown) => void;
+  onDirectSync: (data: VideoSyncData) => void;
+  onConnect?: (socketId: string | null) => void;
 }
 
 export const useSocket = ({
@@ -40,6 +41,7 @@ export const useSocket = ({
   onVideoSync,
   onParticipantJoined,
   onDirectSync,
+  onConnect,
 }: UseSocketProps) => {
   const socketRef = useRef<Socket | null>(null);
 
@@ -53,12 +55,7 @@ export const useSocket = ({
     });
     socketRef.current = socket;
 
-    // Join room
-    socket.emit("room:join", {
-      sessionId,
-      movie,
-      user: { id: userId, name: userName }
-    });
+    // Join room when instructed (see separate effect for user join)
 
     // Event listeners
     socket.on("room:sync", onRoomSync);
@@ -75,8 +72,14 @@ export const useSocket = ({
 
     // Connection events
     socket.on("connect_error", console.error);
-    socket.on("connect", () => console.log('✅ Socket connected'));
-    socket.on("disconnect", () => console.log('❌ Socket disconnected'));
+    socket.on("connect", () => {
+      console.log('✅ Socket connected');
+     onConnect?.(socket.id ?? null);
+    });
+    socket.on("disconnect", () => {
+      console.log('❌ Socket disconnected');
+      onConnect?.(null);
+    });
 
     return () => {
       if (socketRef.current) {
@@ -86,6 +89,18 @@ export const useSocket = ({
       }
     };
   }, [sessionId]);
+
+  // Emit join when userId becomes available
+  useEffect(() => {
+    if (!socketRef.current) return;
+    if (!userId) return;
+
+    socketRef.current.emit("room:join", {
+      sessionId,
+      movie,
+      user: { id: userId, name: userName }
+    });
+  }, [sessionId, movie, userId, userName]);
 
   return socketRef;
 };
