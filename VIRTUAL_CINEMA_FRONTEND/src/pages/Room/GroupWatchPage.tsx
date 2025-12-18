@@ -8,7 +8,7 @@ import { getPlayableVideoUrl} from '../../services/movieApi';
 import { useAuth } from '../../hooks/useAuth';
 
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE = import.meta.env.VITE_API_URL || 'https://virtualcinemabackend.onrender.com';
 
 function useQuery() {
   return new URLSearchParams(useLocation().search);
