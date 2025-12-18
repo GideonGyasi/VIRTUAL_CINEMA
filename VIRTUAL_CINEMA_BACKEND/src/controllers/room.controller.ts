@@ -1,9 +1,10 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import type { AuthenticatedRequest } from '../types';
 import { RoomService } from '../services/room.service';
 import { asyncHandler, ApiResponse } from '../utils/errorHandler';
 import logger from '../utils/logger';
 
-export const createRoom = asyncHandler(async (req: Request, res: Response) => {
+export const createRoom = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { title, youtubeUrl, privacy } = req.body;
   const hostId = req.user?.uid;
 
@@ -38,7 +39,7 @@ export const createRoom = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json(response);
 });
 
-export const getRoom = asyncHandler(async (req: Request, res: Response) => {
+export const getRoom = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { roomId } = req.params;
 
   const room = await RoomService.getRoomById(roomId);
@@ -58,7 +59,7 @@ export const getRoom = asyncHandler(async (req: Request, res: Response) => {
   res.json(response);
 });
 
-export const getPublicRooms = asyncHandler(async (req: Request, res: Response) => {
+export const getPublicRooms = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const rooms = await RoomService.getPublicRooms();
 
   const response: ApiResponse = {
@@ -69,7 +70,7 @@ export const getPublicRooms = asyncHandler(async (req: Request, res: Response) =
   res.json(response);
 });
 
-export const joinRoom = asyncHandler(async (req: Request, res: Response) => {
+export const joinRoom = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { roomId } = req.params;
   const userId = req.user?.uid;
 
@@ -99,7 +100,7 @@ export const joinRoom = asyncHandler(async (req: Request, res: Response) => {
   res.json(response);
 });
 
-export const leaveRoom = asyncHandler(async (req: Request, res: Response) => {
+export const leaveRoom = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { roomId } = req.params;
   const userId = req.user?.uid;
 

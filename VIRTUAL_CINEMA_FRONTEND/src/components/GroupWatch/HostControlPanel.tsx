@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import type { Socket } from 'socket.io-client';
 import { X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import AvatarPicker, { type AvatarOption } from './AvatarPicker';
@@ -12,7 +13,7 @@ interface HostControlPanelProps {
   onClose: () => void;
   onLogout: () => void;
   onUpdateProfile: (data: { name?: string; email?: string; password?: string; avatar?: string }) => void;
-  socketRef: React.RefObject<unknown>;
+  socketRef: React.RefObject<Socket | null>;
   currentUser?: { name?: string; email?: string; avatar?: string };
 }
 

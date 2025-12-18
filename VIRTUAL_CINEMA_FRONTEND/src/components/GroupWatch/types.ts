@@ -23,9 +23,9 @@ export type ChatMessage = {
 export type Reaction = {
   id: string;
   userId: string;
-  name: string;
+  name?: string;
   emoji: string;
-  at: string;
+  at?: string;
 };
 
 export type Movie = {
@@ -46,3 +46,40 @@ export interface GroupWatchProps {
   sessionId?: string;
   displayName?: string;
 }
+
+export type RoomSyncData = {
+  videoTime: number | string;
+  isPlaying: boolean;
+  playbackRate: number;
+  participants: Participant[];
+  messages: ChatMessage[];
+  isHost?: boolean;
+  hostId?: string;
+  joinedAt?: number;
+  movie?: Movie;
+   controlAccessUsers?: string[];
+};
+
+export type VideoSyncData = {
+  time: number | string;
+  isPlaying: boolean;
+  playbackRate?: number;
+  at?: number;
+  isHost?: boolean;
+};
+
+export type MovieUpdateData = Movie;
+
+export type ControlAccessData = {
+  participantId: string;
+  grantedBy?: string;
+  revokedBy?: string;
+  at?: number;
+};
+
+export type EmojiReactionData = {
+  userId: string;
+  name?: string;
+  emoji: string;
+  at?: string;
+};

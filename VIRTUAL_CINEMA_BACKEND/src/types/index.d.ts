@@ -13,7 +13,8 @@ export interface AuthenticatedRequest extends Request {
 
 export interface SocketUser {
   id: string;
-  username?: string;
+  name?: string;
+  email?: string;
   photoURL?: string;
   avatar?: string;
   role?: 'USER' | 'HOST' | 'ADMIN';

@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Box, Typography, Button, TextField, List, ListItem, ListItemText, Paper } from '@mui/material';
 import { useRoom } from '../../hooks/useRoom';
-import { useSocket } from '../../context/SocketContext';
+import { useSocket } from '../../context/socketContext';
+import type { SyncEvent, Message } from '../../types/room';
 
 const Room: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
-  const { room, messages, isConnected, sendMessage, sendSyncEvent } = useRoom(roomId || null);
+  const { room, messages, sendMessage, sendSyncEvent } = useRoom(roomId || null);
   const { socket } = useSocket();
   const [message, setMessage] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
@@ -15,7 +16,7 @@ const Room: React.FC = () => {
 
   useEffect(() => {
     if (socket) {
-      socket.on('sync-event', (event: any) => {
+      socket.on('sync-event', (event: SyncEvent) => {
         if (event.type === 'play') {
           setIsPlaying(true);
           if (videoRef.current) {
@@ -35,7 +36,7 @@ const Room: React.FC = () => {
         }
       });
 
-      socket.on('message', (msg: any) => {
+      socket.on('message', (msg: Message) => {
         // Handle incoming messages
         console.log('New message:', msg);
       });

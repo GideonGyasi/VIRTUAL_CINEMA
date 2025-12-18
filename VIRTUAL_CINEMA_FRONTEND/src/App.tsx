@@ -8,7 +8,7 @@ import Room from './pages/Room';
 import CreateRoom from './pages/Room/CreateRoom';
 import GroupWatchPage from './pages/Room/GroupWatchPage';
 import AuthProvider from './context/AuthProvider';
-import SocketProvider from './context/SocketContext';
+import SocketProvider from "./context/SocketProvider";
 import { useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
 

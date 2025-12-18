@@ -19,6 +19,23 @@ interface OmdbMovie {
   Type: string;
 }
 
+// Add this near your other interfaces at the top
+interface TmdbMovieResult {
+  id: number;
+  title: string;
+  poster_path: string | null;
+  release_date: string;
+  overview: string;
+  vote_average: number;
+}
+
+interface TmdbGenre {
+  id: number;
+  name: string;
+}
+
+
+
 
 /**
  * Fetch movies from OMDB API (free tier, limited results)
@@ -55,7 +72,7 @@ export async function fetchMoviesFromOmdb(): Promise<MovieDetails[]> {
                 trailer: '', // OMDB doesn't provide video URLs
                 cast: [],
                 director: '',
-                src: '', // Will be filled with placeholder video
+               // Will be filled with placeholder video
               });
             }
           });
@@ -97,7 +114,7 @@ export async function fetchMoviesFromTmdb(): Promise<MovieDetails[]> {
     console.log(`[🎬 MOVIE API] Found ${movies.length} popular movies`);
 
     // Fetch detailed info for each movie to get genres and runtime
-    const movieDetailsPromises = movies.slice(0, 20).map(async (movie) => {
+    const movieDetailsPromises = movies.slice(0, 20).map(async (movie: TmdbMovieResult) => {
       try {
         const detailResponse = await axios.get(`${TMDB_BASE_URL}/movie/${movie.id}`, {
           params: {
@@ -116,7 +133,7 @@ export async function fetchMoviesFromTmdb(): Promise<MovieDetails[]> {
             : 'https://picsum.photos/800/1200',
           year: parseInt(movie.release_date?.split('-')[0] || '2024'),
           description: movie.overview || 'No description available',
-          genre: details.genres?.map((g: unknown) => g.name) || [],
+          genre: details.genres?.map((g: TmdbGenre) => g.name) || [],
           duration: details.runtime || 120,
           rating: parseFloat((movie.vote_average || 7.5).toFixed(1)),
           trailer: '',

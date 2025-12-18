@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import type { RefObject } from "react";
 import ReactPlayer from "react-player";
 import { motion } from "framer-motion";
 import Header from "../../components/GroupWatch/Header";
@@ -6,19 +7,62 @@ import CameraPanel from "../../components/GroupWatch/CameraPanel";
 import PlayerArea from "../../components/GroupWatch/PlayerArea";
 import ChatPanel from "../../components/GroupWatch/ChatPanel";
 import ParticipantsPanel from "../../components/GroupWatch/ParticipantsPanel";
-import VideoStream from "../../components/GroupWatch/VideoStream";
 import ControlBar from "../../components/GroupWatch/ControlBar";
 import HostControlPanel from "../../components/GroupWatch/HostControlPanel";
 import { useSocket } from "../../components/GroupWatch/hooks/useSocket";
 import { useSync } from "../../components/GroupWatch/hooks/useSync";
 import { useMediaStream } from "../../components/GroupWatch/hooks/useMediaStream";
 
-import { makeId, EMOJI_REACTIONS } from "../../components/GroupWatch/utils";
-import type{ GroupWatchProps, Participant, ChatMessage, Reaction, Movie } from "../../components/GroupWatch/types";
+import { EMOJI_REACTIONS } from "../../components/GroupWatch/utils";
+import type { GroupWatchProps, Participant, ChatMessage, Reaction, Movie, RoomSyncData, VideoSyncData, MovieUpdateData, ControlAccessData, EmojiReactionData } from "../../components/GroupWatch/types";
+import type { Socket } from "socket.io-client";
 import { fetchMoviesWithVideos } from "../../services/movieApi";
 import { X } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import AuthModal from "../../components/AuthModal";
+
+// Fix ReactPlayer types
+declare module 'react-player' {
+  interface ReactPlayer {
+    getInternalPlayer: () => HTMLVideoElement | HTMLAudioElement | null;
+  }
+}
+
+// Define specific types for socket events
+interface SocketEvents {
+  'room:control:grant': (data: ControlAccessData) => void;
+  'room:control:revoke': (data: ControlAccessData) => void;
+  'room:host:restart': () => void;
+  'room:host:ended': () => void;
+  'room:host:locked': (data: { locked: boolean }) => void;
+  'room:host:privacy:changed': (data: { isPrivate: boolean }) => void;
+  'room:host:chat:toggled': (data: { enabled: boolean }) => void;
+  'room:host:layout:changed': (data: { layout: string }) => void;
+  'room:host:fullscreen': (data: { enabled: boolean }) => void;
+  'room:host:promoted': (data: { userId: string }) => void;
+  'room:host:demoted': (data: { userId: string }) => void;
+  'room:removed': (data?: { reason?: string; message?: string }) => void;
+  'room:banned': () => void;
+  'room:kicked': () => void;
+  'room:host:chat:cleared': () => void;
+  'room:host:message:deleted': (data: { messageId: string }) => void;
+  'room:host:message:pinned': (data: { messageId: string; pinned: boolean }) => void;
+}
+
+// Type for socket ref
+type SocketRef = React.RefObject<Socket<SocketEvents> | null>;
+
+// Helper function to generate IDs (moved outside component to avoid impure render)
+const generateId = (length: number): string => {
+  let result = '';
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return result;
+};
+
+const generateGuestId = (): string => `guest_${Math.random().toString(36).slice(2, 9)}`;
 
 const GroupWatch: React.FC<GroupWatchProps> = ({ 
   movie: propMovie, 
@@ -26,7 +70,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   displayName 
 }) => {
   // State
-  const [sessionId] = useState(() => initialSessionId || makeId(10));
+  const [sessionId] = useState(() => initialSessionId || generateId(10));
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [reactions, setReactions] = useState<Reaction[]>([]);
@@ -45,91 +89,156 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   const [showPlayOverlay, setShowPlayOverlay] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [initialSyncApplied, setInitialSyncApplied] = useState(false);
-  const [controlAccessUsers, setControlAccessUsers] = useState<Set<string>>(new Set()); // Users with control access (host always has it)
+  const [controlAccessUsers, setControlAccessUsers] = useState<Set<string>>(new Set());
   const [showMovieSelector, setShowMovieSelector] = useState(false);
   const [availableMovies, setAvailableMovies] = useState<Movie[]>([]);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [coHostIds, setCoHostIds] = useState<string[]>([]);
-  const [isLocked, setIsLocked] = useState(false);
-  const [isPrivate, setIsPrivate] = useState(false);
   const [chatEnabled, setChatEnabled] = useState(true);
-  const [currentLayout, setCurrentLayout] = useState('cinema');
   const [showHostControls, setShowHostControls] = useState(false);
   const [removedByHost, setRemovedByHost] = useState(false);
   const [removedMessage, setRemovedMessage] = useState<string | null>(null);
-
+  // Local current user snapshot (derived from ref & auth) to avoid reading refs during render
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; avatar: string }>({ name: '', email: '', avatar: '' });
+ 
   // Refs
   const playerRef = useRef<ReactPlayer>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const isApplyingRemote = useRef(false);
   const lastLocalAction = useRef(0);
-  const pendingSyncData = useRef<any>(null);
+  const pendingSyncData = useRef<RoomSyncData | null>(null);
   const isWaitingForInteraction = useRef(false);
   const isProcessingLocalPlayPause = useRef(false);
+  // Proxy ref for participant-joined handler to avoid referencing socketRef before its declaration
+  const participantJoinedHandlerRef = useRef<((participant: Participant) => void) | null>(null);
+  
 
   // Auth hook
   const { user, isAuthenticated, logout, updateUser } = useAuth();
 
-  // User info - prioritize displayName prop (which is set from GroupWatchPage)
-  // This ensures we use the name entered by the user or their authenticated name
-  const guestId = useRef(`guest_${Math.random().toString(36).slice(2, 9)}`);
-  const localUser = useRef({ 
-    id: isAuthenticated && user?.id ? user.id : guestId.current, 
-    name: displayName || (isAuthenticated && user?.name ? user.name : `Guest_${makeId(4)}`)
-  });
+  // User info - moved to useEffect to avoid impure render
+   const guestId = useRef<string | null>(null);
+  const localUser = useRef<{ id: string; name: string } | null>(null);
 
-  // Update localUser name when displayName changes (from GroupWatchPage)
+  // Initialize user info in useEffect
   useEffect(() => {
-    if (displayName) {
-      localUser.current.name = displayName;
-    } else if (isAuthenticated && user?.name) {
-      localUser.current.name = user.name;
+    if (!guestId.current) {
+      guestId.current = generateGuestId();
     }
-    // If we have a socket, tell the server about our chosen display name so all participants see it
-    try {
-      if (displayName && socketRef?.current) {
-        socketRef.current.emit('room:participant:update', { sessionId, name: displayName });
+
+    if (!localUser.current) {
+      localUser.current = {
+        id: isAuthenticated && user?.id ? user.id : guestId.current!,
+        name: displayName || (isAuthenticated && user?.name ? user.name : `Guest_${generateId(4)}`),
+      };
+    } else {
+      // Update name if needed
+      const newName = displayName || (isAuthenticated && user?.name ? user.name : `Guest_${generateId(4)}`);
+      if (localUser.current.name !== newName) {
+        localUser.current.name = newName;
       }
-    } catch (e) {
-      console.warn('Failed to emit participant:update for displayName', e);
     }
-  }, [displayName, isAuthenticated, user]);
+
+    // Compute desired snapshot and only update state if it changed
+    const desired = { name: localUser.current!.name || '', email: user?.email || '', avatar: user?.avatar || '' };
+    // Schedule update asynchronously to avoid triggering cascading state updates inside an effect
+    setTimeout(() => {
+      setCurrentUser(prev => (prev.name === desired.name && prev.email === desired.email && prev.avatar === desired.avatar) ? prev : desired);
+    }, 0);
+  }, [isAuthenticated, user, displayName]);
 
   // Custom hooks
   const mediaStream = useMediaStream();
-  const socketRef = useSocket({
-    sessionId,
-    movie: propMovie,
-    userId: localUser.current.id,
-    userName: localUser.current.name,
-    isHost,
-    playerReady,
-    initialSyncApplied,
-    onRoomSync: handleRoomSync,
-    onMovieUpdate: handleMovieUpdate,
-    onParticipantsUpdate: setParticipants,
-    onChatMessage: handleChatMessage,
-    onEmojiReaction: handleEmojiReaction,
-    onVideoPlay: handleRemotePlay,
-    onVideoPause: handleRemotePause,
-    onVideoSeek: handleRemoteSeek,
-    onVideoSync: handleRemoteSync,
-    onParticipantJoined: handleParticipantJoined,
-    onDirectSync: handleDirectSync,
-  });
 
-  const { sendPlay, sendPause, sendSeek, sendSync } = useSync({
-    isHost,
-    sessionId,
-    playbackRate,
-    playerReady,
-    socketRef,
-    playerRef,
-    isApplyingRemote,
-  });
+  
+  const applySyncData = useCallback((data: VideoSyncData) => {
+    if (!playerRef.current || !playerReady) return;
+    
+    isApplyingRemote.current = true;
+    const player = playerRef.current;
+    const serverTime = typeof data.time === 'string' ? parseFloat(data.time) : data.time || 0;
+    
+    player.seekTo(serverTime, 'seconds');
+    setIsPlaying(data.isPlaying || false);
+    
+    if (data.playbackRate && data.playbackRate !== playbackRate) {
+      setPlaybackRate(data.playbackRate);
+      // Fixed: Use internal player instead of setPlaybackRate
+      const internalPlayer = player.getInternalPlayer();
+      if (internalPlayer && 'playbackRate' in internalPlayer) {
+        (internalPlayer as HTMLVideoElement).playbackRate = data.playbackRate;
+      }
+    }
+    
+    if (data.isPlaying && !isHost) {
+      setTimeout(() => {
+        if (userInteracted) {
+          const internalPlayer = player.getInternalPlayer();
+          if (internalPlayer && internalPlayer.paused) {
+            internalPlayer.play().catch((error: Error) => {
+              if (error.name === 'NotAllowedError') {
+                isWaitingForInteraction.current = true;
+                setShowPlayOverlay(true);
+              }
+            });
+          }
+        } else {
+          isWaitingForInteraction.current = true;
+          setShowPlayOverlay(true);
+        }
+        isApplyingRemote.current = false;
+      }, 300);
+    } else {
+      isApplyingRemote.current = false;
+    }
+  }, [playerReady, playbackRate, userInteracted, isHost]);
+  
+   const applyInitialSync = useCallback((data: RoomSyncData) => {
+    if (!playerRef.current || !playerReady) return;
+    
+    isApplyingRemote.current = true;
+    const player = playerRef.current;
+    const serverTime = typeof data.videoTime === 'string' ? parseFloat(data.videoTime) : data.videoTime || 0;
+    
+    player.seekTo(serverTime, 'seconds');
+    setIsPlaying(data.isPlaying || false);
+    
+    if (data.playbackRate && data.playbackRate !== playbackRate) {
+      setPlaybackRate(data.playbackRate);
+      // Fixed: Use internal player instead of setPlaybackRate
+      const internalPlayer = player.getInternalPlayer();
+      if (internalPlayer && 'playbackRate' in internalPlayer) {
+        (internalPlayer as HTMLVideoElement).playbackRate = data.playbackRate;
+      }
+    }
+    
+    setInitialSyncApplied(true);
+    
+    if (data.isPlaying && !data.isHost) {
+      setTimeout(() => {
+        if (userInteracted) {
+          const internalPlayer = player.getInternalPlayer();
+          if (internalPlayer && internalPlayer.paused) {
+            internalPlayer.play().catch((error: Error) => {
+              if (error.name === 'NotAllowedError') {
+                isWaitingForInteraction.current = true;
+                setShowPlayOverlay(true);
+              }
+            });
+          }
+        } else {
+          isWaitingForInteraction.current = true;
+          setShowPlayOverlay(true);
+        }
+        isApplyingRemote.current = false;
+      }, 800);
+    } else {
+      isApplyingRemote.current = false;
+    }
+  }, [playerReady, playbackRate, userInteracted]);
 
-  // Handlers
-  function handleRoomSync(data: any) {
+  // Define handlers with proper types before using them
+  const handleRoomSync = useCallback((data: RoomSyncData) => {
     console.log('[🔄 ROOM SYNC] Received room sync data', {
       isHost: data.isHost,
       participantCount: data.participants?.length,
@@ -138,13 +247,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     
     setIsHost(data.isHost || false);
     
-    // Sync control access users from server if provided
     if (data.controlAccessUsers && Array.isArray(data.controlAccessUsers)) {
       setControlAccessUsers(new Set(data.controlAccessUsers));
       console.log('[🔄 ROOM SYNC] Synced control access users', { users: data.controlAccessUsers });
     }
     
-    // Update participants with control access info
     const participantsWithControl = (data.participants || []).map((p: Participant) => ({
       ...p,
       hasControlAccess: p.isHost || (data.controlAccessUsers || []).includes(p.id),
@@ -157,9 +264,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     if (playerReady && !initialSyncApplied) {
       applyInitialSync(data);
     }
-  }
+  }, [playerReady, initialSyncApplied, applyInitialSync]);
 
-  function handleMovieUpdate(movieData: Movie) {
+  const handleMovieUpdate = useCallback((movieData: MovieUpdateData) => {
     console.log('[🎬 MOVIE UPDATE] Received movie update', {
       currentMovieId: currentMovie.id,
       newMovieId: movieData.id,
@@ -167,43 +274,82 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       newSrc: movieData.src,
     });
 
-    // If it's the same movie, just update properties
     if (movieData.src === currentMovie.src || movieData.id === currentMovie.id) {
       console.log('[🎬 MOVIE UPDATE] Same movie, updating properties');
       setCurrentMovie(prev => ({ ...prev, ...movieData }));
       return;
     }
     
-    // Different movie - update and reset player
     console.log('[🎬 MOVIE UPDATE] Different movie detected, switching...');
     setCurrentMovie(movieData);
     if (playerRef.current) {
       playerRef.current.seekTo(0);
       setIsPlaying(false);
     }
-    // Force player to reload with new source
     setPlayerReady(false);
     setTimeout(() => {
       setPlayerReady(true);
     }, 100);
-  }
+  }, [currentMovie]);
 
-  function handleChatMessage(msg: ChatMessage) {
+  const handleChatMessage = useCallback((msg: ChatMessage) => {
     setMessages(prev => [...prev, msg]);
-  }
+  }, []);
 
-  function handleEmojiReaction(reactionData: any) {
+  const handleEmojiReaction = useCallback((reactionData: EmojiReactionData) => {
     const reaction: Reaction = {
       ...reactionData,
+         name: reactionData.name || 'Anonymous', // Still provide default
       id: `${reactionData.userId}-${Date.now()}`
     };
     setReactions(prev => [...prev, reaction]);
     setTimeout(() => {
       setReactions(prev => prev.filter(r => r.id !== reaction.id));
     }, 3000);
-  }
+  }, []);
 
-  function handleRemotePlay({ time, at }: { time: number; at: number }) {
+    const handleAutoPlay = useCallback((player: ReactPlayer) => {
+    console.log('[🎬 AUTO PLAY] handleAutoPlay called', {
+      userInteracted,
+      showPlayOverlay,
+      isWaitingForInteraction: isWaitingForInteraction.current,
+    });
+    
+    setTimeout(() => {
+      if (userInteracted) {
+        const internalPlayer = player.getInternalPlayer();
+        console.log('[🎬 AUTO PLAY] User has interacted, checking player state', {
+          hasInternalPlayer: !!internalPlayer,
+          isPaused: internalPlayer?.paused,
+        });
+        
+        if (internalPlayer && internalPlayer.paused) {
+          console.log('[🎬 AUTO PLAY] ▶️ Attempting to play');
+          internalPlayer.play()
+            .then(() => console.log('[🎬 AUTO PLAY] ✅ Play succeeded'))
+            .catch((error: Error) => {
+              console.log('[🎬 AUTO PLAY] ❌ Play failed', { error: error.name, message: error.message });
+              if (error.name === 'NotAllowedError') {
+                console.log('[🎬 AUTO PLAY] ⚠️ User interaction required - showing overlay');
+                isWaitingForInteraction.current = true;
+                setShowPlayOverlay(true);
+              }
+            });
+        } else {
+          console.log('[🎬 AUTO PLAY] ⚠️ Player already playing or not available');
+        }
+      } else {
+        console.log('[🎬 AUTO PLAY] ⏳ User not interacted - showing overlay');
+        isWaitingForInteraction.current = true;
+        setShowPlayOverlay(true);
+      }
+      isApplyingRemote.current = false;
+      console.log('[🎬 AUTO PLAY] 🔓 Released remote lock');
+    }, 200);
+  }, [userInteracted, showPlayOverlay]);
+
+
+  const handleRemotePlay = useCallback(({ time, at }: { time: number; at: number }) => {
     console.log('[🌐 REMOTE PLAY] handleRemotePlay called', {
       isHost,
       time,
@@ -245,9 +391,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       console.log('[🌐 REMOTE PLAY] ⚠️ Player not ready');
       isApplyingRemote.current = false;
     }
-  }
+  }, [isHost, playerReady, handleAutoPlay]);
 
-  function handleRemotePause({ time, at }: { time: number; at: number }) {
+  const handleRemotePause = useCallback(({ time, at }: { time: number; at: number }) => {
     console.log('[🌐 REMOTE PAUSE] handleRemotePause called', {
       isHost,
       time,
@@ -295,9 +441,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       console.log('[🌐 REMOTE PAUSE] ⚠️ Player not ready');
       isApplyingRemote.current = false;
     }
-  }
+  }, [isHost, playerReady]);
 
-  function handleRemoteSeek({ time, at }: { time: number; at: number }) {
+  const handleRemoteSeek = useCallback(({ time}: { time: number; at: number }) => {
     if (isApplyingRemote.current || Date.now() - lastLocalAction.current < 500) return;
     
     isApplyingRemote.current = true;
@@ -316,9 +462,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       }
       setTimeout(() => isApplyingRemote.current = false, 100);
     }
-  }
+  }, [isPlaying, userInteracted, playerReady]);
 
-  function handleRemoteSync(data: any) {
+  const handleRemoteSync = useCallback((data: VideoSyncData) => {
     console.log('[🔄 REMOTE SYNC] handleRemoteSync called', {
       isHost,
       data,
@@ -381,7 +527,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
           newRate: data.playbackRate,
         });
         setPlaybackRate(data.playbackRate);
-        player.setPlaybackRate(data.playbackRate);
+        // Fixed: Use internal player instead of setPlaybackRate
+        const internalPlayer = player.getInternalPlayer();
+        if (internalPlayer && 'playbackRate' in internalPlayer) {
+          (internalPlayer as HTMLVideoElement).playbackRate = data.playbackRate;
+        }
       }
       
       setTimeout(() => {
@@ -392,148 +542,80 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       console.log('[🔄 REMOTE SYNC] ⚠️ Player not ready');
       isApplyingRemote.current = false;
     }
-  }
+  }, [isHost, isPlaying, playbackRate, playerReady, handleAutoPlay]);
 
-  function handleParticipantJoined(participant: Participant) {
-    if (isHost && playerRef.current && socketRef.current && playerReady) {
-      const currentTime = playerRef.current.getCurrentTime();
-      const player = playerRef.current.getInternalPlayer();
-      const isPlaying = player && !player.paused;
-      
-      socketRef.current.emit('room:video:sync:direct', {
-        sessionId,
-        targetSocketId: participant.socketId,
-        time: currentTime,
-        isPlaying,
-        playbackRate,
-        at: Date.now()
-      });
-    }
-  }
+ 
 
-  function handleDirectSync(data: any) {
+   
+
+  const handleDirectSync = useCallback((data: VideoSyncData) => {
     if (!isHost && playerRef.current && playerReady) {
       applySyncData(data);
     }
-  }
+  }, [isHost, playerReady, applySyncData]);
 
-  function handleAutoPlay(player: ReactPlayer) {
-    console.log('[🎬 AUTO PLAY] handleAutoPlay called', {
-      userInteracted,
-      showPlayOverlay,
-      isWaitingForInteraction: isWaitingForInteraction.current,
-    });
-    
-    setTimeout(() => {
-      if (userInteracted) {
-        const internalPlayer = player.getInternalPlayer();
-        console.log('[🎬 AUTO PLAY] User has interacted, checking player state', {
-          hasInternalPlayer: !!internalPlayer,
-          isPaused: internalPlayer?.paused,
+  
+
+
+
+
+  // Now use the hooks with properly typed handlers
+  const socketRef = useSocket({
+    sessionId,
+    movie: propMovie,
+    userId: 'pending',
+    userName: 'Guest',
+    isHost,
+    playerReady,
+    initialSyncApplied,
+    onRoomSync: handleRoomSync,
+    onMovieUpdate: handleMovieUpdate,
+    onParticipantsUpdate: setParticipants,
+    onChatMessage: handleChatMessage,
+    onEmojiReaction: handleEmojiReaction,
+    onVideoPlay: handleRemotePlay,
+    onVideoPause: handleRemotePause,
+    onVideoSeek: handleRemoteSeek,
+    onVideoSync: handleRemoteSync,
+    onParticipantJoined: (participant: Participant) => participantJoinedHandlerRef.current?.(participant),
+    onDirectSync: handleDirectSync,
+  });
+
+  // Assign the concrete handler after socketRef exists and keep it up-to-date
+  useEffect(() => {
+    participantJoinedHandlerRef.current = (participant: Participant) => {
+      if (isHost && playerRef.current && socketRef.current && playerReady) {
+        const currentTime = playerRef.current.getCurrentTime();
+        const player = playerRef.current.getInternalPlayer();
+        const isPlayingState = player && !player.paused;
+
+        socketRef.current.emit('room:video:sync:direct', {
+          sessionId,
+          targetSocketId: participant.socketId,
+          time: currentTime,
+          isPlaying: isPlayingState,
+          playbackRate,
+          at: Date.now(),
         });
-        
-        if (internalPlayer && internalPlayer.paused) {
-          console.log('[🎬 AUTO PLAY] ▶️ Attempting to play');
-          internalPlayer.play()
-            .then(() => console.log('[🎬 AUTO PLAY] ✅ Play succeeded'))
-            .catch((error: any) => {
-              console.log('[🎬 AUTO PLAY] ❌ Play failed', { error: error.name, message: error.message });
-              if (error.name === 'NotAllowedError') {
-                console.log('[🎬 AUTO PLAY] ⚠️ User interaction required - showing overlay');
-                isWaitingForInteraction.current = true;
-                setShowPlayOverlay(true);
-              }
-            });
-        } else {
-          console.log('[🎬 AUTO PLAY] ⚠️ Player already playing or not available');
-        }
-      } else {
-        console.log('[🎬 AUTO PLAY] ⏳ User not interacted - showing overlay');
-        isWaitingForInteraction.current = true;
-        setShowPlayOverlay(true);
       }
-      isApplyingRemote.current = false;
-      console.log('[🎬 AUTO PLAY] 🔓 Released remote lock');
-    }, 200);
-  }
+    };
 
-  function applyInitialSync(data: any) {
-    if (!playerRef.current || !playerReady) return;
-    
-    isApplyingRemote.current = true;
-    const player = playerRef.current;
-    const serverTime = typeof data.videoTime === 'string' ? parseFloat(data.videoTime) : data.videoTime;
-    
-    player.seekTo(serverTime, 'seconds');
-    setIsPlaying(data.isPlaying);
-    
-    if (data.playbackRate && data.playbackRate !== playbackRate) {
-      setPlaybackRate(data.playbackRate);
-      player.setPlaybackRate(data.playbackRate);
-    }
-    
-    setInitialSyncApplied(true);
-    
-    if (data.isPlaying && !data.isHost) {
-      setTimeout(() => {
-        if (userInteracted) {
-          const internalPlayer = player.getInternalPlayer();
-          if (internalPlayer && internalPlayer.paused) {
-            internalPlayer.play().catch((error: any) => {
-              if (error.name === 'NotAllowedError') {
-                isWaitingForInteraction.current = true;
-                setShowPlayOverlay(true);
-              }
-            });
-          }
-        } else {
-          isWaitingForInteraction.current = true;
-          setShowPlayOverlay(true);
-        }
-        isApplyingRemote.current = false;
-      }, 800);
-    } else {
-      isApplyingRemote.current = false;
-    }
-  }
+    return () => {
+      participantJoinedHandlerRef.current = null;
+    };
+  }, [isHost, sessionId, playbackRate, playerReady, socketRef]);
 
-  function applySyncData(data: any) {
-    if (!playerRef.current || !playerReady) return;
-    
-    isApplyingRemote.current = true;
-    const player = playerRef.current;
-    const serverTime = typeof data.time === 'string' ? parseFloat(data.time) : data.time;
-    
-    player.seekTo(serverTime, 'seconds');
-    setIsPlaying(data.isPlaying);
-    
-    if (data.playbackRate && data.playbackRate !== playbackRate) {
-      setPlaybackRate(data.playbackRate);
-      player.setPlaybackRate(data.playbackRate);
-    }
-    
-    if (data.isPlaying && !isHost) {
-      setTimeout(() => {
-        if (userInteracted) {
-          const internalPlayer = player.getInternalPlayer();
-          if (internalPlayer && internalPlayer.paused) {
-            internalPlayer.play().catch((error: any) => {
-              if (error.name === 'NotAllowedError') {
-                isWaitingForInteraction.current = true;
-                setShowPlayOverlay(true);
-              }
-            });
-          }
-        } else {
-          isWaitingForInteraction.current = true;
-          setShowPlayOverlay(true);
-        }
-        isApplyingRemote.current = false;
-      }, 300);
-    } else {
-      isApplyingRemote.current = false;
-    }
-  }
+  
+
+  const { sendPlay, sendPause, sendSeek, sendSync } = useSync({
+    isHost,
+    sessionId,
+    playbackRate,
+    playerReady,
+    socketRef: socketRef as SocketRef,
+    playerRef,
+    isApplyingRemote,
+  });
 
   function handlePlayerReady() {
     setPlayerReady(true);
@@ -543,7 +625,8 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   }
 
   // Helper function to check if user has control access
-  function hasControlAccess(): boolean {
+  const hasControlAccess = useCallback((): boolean => {
+    if (!localUser.current) return false;
     const hasAccess = isHost || controlAccessUsers.has(localUser.current.id);
     console.log('[🔐 CONTROL] Checking access', {
       userId: localUser.current.id,
@@ -553,11 +636,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       allControlUsers: Array.from(controlAccessUsers),
     });
     return hasAccess;
-  }
+  }, [isHost, controlAccessUsers]);
 
-  function handlePlay() {
+  const handlePlay = useCallback(() => {
     console.log('[🔵 PLAY] handlePlay called', {
-      userId: localUser.current.id,
+      userId: localUser.current?.id,
       isHost,
       isApplyingRemote: isApplyingRemote.current,
       isProcessingLocal: isProcessingLocalPlayPause.current,
@@ -596,7 +679,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     isWaitingForInteraction.current = false;
     
     const currentTime = playerRef.current?.getCurrentTime() || 0;
-    console.log('[🔵 PLAY] 📤 Sending play event', { time: currentTime, isHost, userId: localUser.current.id });
+    console.log('[🔵 PLAY] 📤 Sending play event', { time: currentTime, isHost, userId: localUser.current?.id });
     sendPlay(currentTime);
     
     // Reset the flag after a short delay to allow state to stabilize
@@ -604,11 +687,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       isProcessingLocalPlayPause.current = false;
       console.log('[🔵 PLAY] 🔓 Released processing lock');
     }, 300);
-  }
+  }, [hasControlAccess, isPlaying, sendPlay, isHost, socketRef]);
 
-  function handlePause() {
+  const handlePause = useCallback(() => {
     console.log('[⏸️ PAUSE] handlePause called', {
-      userId: localUser.current.id,
+      userId: localUser.current?.id,
       isHost,
       isApplyingRemote: isApplyingRemote.current,
       isProcessingLocal: isProcessingLocalPlayPause.current,
@@ -646,7 +729,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     isWaitingForInteraction.current = false;
     
     const currentTime = playerRef.current?.getCurrentTime() || 0;
-    console.log('[⏸️ PAUSE] 📤 Sending pause event', { time: currentTime, isHost, userId: localUser.current.id });
+    console.log('[⏸️ PAUSE] 📤 Sending pause event', { time: currentTime, isHost, userId: localUser.current?.id });
     sendPause(currentTime);
     
     // Reset the flag after a short delay to allow state to stabilize
@@ -654,12 +737,12 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       isProcessingLocalPlayPause.current = false;
       console.log('[⏸️ PAUSE] 🔓 Released processing lock');
     }, 300);
-  }
+  }, [hasControlAccess, isPlaying, sendPause, isHost, socketRef]);
 
-  function handleSeek(seconds: number) {
+  const handleSeek = useCallback((seconds: number) => {
     console.log('[🔍 SEEK] handleSeek called', {
       seconds,
-      userId: localUser.current.id,
+      userId: localUser.current?.id,
       isHost,
       isApplyingRemote: isApplyingRemote.current,
       hasSocket: !!socketRef.current,
@@ -679,16 +762,23 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     console.log('[🔍 SEEK] ✅ PROCEEDING - sending seek event (user has control access)');
     lastLocalAction.current = Date.now();
     sendSeek(seconds);
-  }
+  }, [hasControlAccess, sendSeek, socketRef, isHost]);
 
-  function handlePlaybackRateChange(rate: number) {
+  const handlePlaybackRateChange = useCallback((rate: number) => {
     setPlaybackRate(rate);
+    // Fixed: Set playback rate on internal player
+    if (playerRef.current) {
+      const internalPlayer = playerRef.current.getInternalPlayer();
+      if (internalPlayer && 'playbackRate' in internalPlayer) {
+        (internalPlayer as HTMLVideoElement).playbackRate = rate;
+      }
+    }
     if (isHost && socketRef.current) {
       sendSync(playerRef.current?.getCurrentTime() || 0, isPlaying);
     }
-  }
+  }, [isHost, isPlaying, sendSync, socketRef]);
 
-  function handleManualPlay() {
+  const handleManualPlay = useCallback(() => {
     console.log('[👆 MANUAL PLAY] handleManualPlay called', {
       isHost,
       isProcessingLocal: isProcessingLocalPlayPause.current,
@@ -722,14 +812,16 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         // Let ReactPlayer's onPlay callback handle the state update
         internalPlayer.play()
           .then(() => console.log('[👆 MANUAL PLAY] ✅ Play promise resolved'))
-          .catch(e => console.log('[👆 MANUAL PLAY] ❌ Manual play failed:', e));
+          .catch((e: Error) => console.log('[👆 MANUAL PLAY] ❌ Manual play failed:', e));
       } else {
         console.log('[👆 MANUAL PLAY] ⚠️ Player not paused or not available');
       }
     }
-  }
+  }, [isHost, userInteracted, showPlayOverlay]);
 
-  function handleEmojiReactionLocal(emoji: string) {
+  const handleEmojiReactionLocal = useCallback((emoji: string) => {
+    if (!localUser.current) return;
+    
     const reaction: Reaction = {
       id: `${localUser.current.id}-${Date.now()}`,
       userId: localUser.current.id,
@@ -745,9 +837,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     setTimeout(() => {
       setReactions(prev => prev.filter(r => r.id !== reaction.id));
     }, 3000);
-  }
+  }, [sessionId, socketRef]);
 
-  function handleSendMessage(e: React.FormEvent) {
+  const handleSendMessage = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (!messageText.trim() || !socketRef.current) return;
     
@@ -757,8 +849,10 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       return;
     }
     
+    if (!localUser.current) return;
+    
     const msg: ChatMessage = {
-      id: `${Date.now()}_${makeId(4)}`,
+      id: `${Date.now()}_${generateId(4)}`,
       userId: localUser.current.id,
       name: localUser.current.name,
       text: messageText.trim(),
@@ -768,9 +862,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     // Do not add message locally to avoid duplicates — server will echo and broadcast
     socketRef.current.emit("room:chat:message", { sessionId, message: msg });
     setMessageText("");
-  }
+  }, [messageText, chatEnabled, sessionId, socketRef]);
 
-  async function copySessionLink() {
+  const copySessionLink = useCallback(async () => {
     const url = `${window.location.origin}/group/${sessionId}?movie=${encodeURIComponent(currentMovie.id || currentMovie.title)}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -779,17 +873,17 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     } catch (err) {
       console.error('Failed to copy link:', err);
     }
-  }
+  }, [sessionId, currentMovie]);
 
   // Control access management functions
-  function grantControlAccess(participantId: string) {
+  const grantControlAccess = useCallback((participantId: string) => {
     if (!isHost || !socketRef.current) {
       console.log('[🔐 CONTROL] 🚫 Cannot grant access - not host or no socket');
       return;
     }
     
     console.log('[🔐 CONTROL] ✅ Granting control access', {
-      hostId: localUser.current.id,
+      hostId: localUser.current?.id,
       targetParticipantId: participantId,
       sessionId,
     });
@@ -805,7 +899,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     socketRef.current.emit('room:control:grant', {
       sessionId,
       participantId,
-      grantedBy: localUser.current.id,
+      grantedBy: localUser.current?.id || '',
       at: Date.now(),
     });
     
@@ -813,16 +907,16 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     setParticipants(prev => prev.map(p => 
       p.id === participantId ? { ...p, hasControlAccess: true } : p
     ));
-  }
+  }, [isHost, sessionId, socketRef]);
 
-  function revokeControlAccess(participantId: string) {
+  const revokeControlAccess = useCallback((participantId: string) => {
     if (!isHost || !socketRef.current) {
       console.log('[🔐 CONTROL] 🚫 Cannot revoke access - not host or no socket');
       return;
     }
     
     console.log('[🔐 CONTROL] ❌ Revoking control access', {
-      hostId: localUser.current.id,
+      hostId: localUser.current?.id,
       targetParticipantId: participantId,
       sessionId,
     });
@@ -838,7 +932,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     socketRef.current.emit('room:control:revoke', {
       sessionId,
       participantId,
-      revokedBy: localUser.current.id,
+      revokedBy: localUser.current?.id || '',
       at: Date.now(),
     });
     
@@ -846,12 +940,12 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     setParticipants(prev => prev.map(p => 
       p.id === participantId ? { ...p, hasControlAccess: false } : p
     ));
-  }
+  }, [isHost, sessionId, socketRef]);
 
-  function handleControlAccessGranted(data: { participantId: string; grantedBy: string }) {
+  const handleControlAccessGranted = useCallback((data: ControlAccessData) => {
     console.log('[🔐 CONTROL] 📥 Received control access grant', data);
     
-    if (data.participantId === localUser.current.id) {
+    if (data.participantId === localUser.current?.id) {
       console.log('[🔐 CONTROL] 🎉 You have been granted control access!');
       setControlAccessUsers(prev => new Set(prev).add(data.participantId));
     }
@@ -860,12 +954,12 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     setParticipants(prev => prev.map(p => 
       p.id === data.participantId ? { ...p, hasControlAccess: true } : p
     ));
-  }
+  }, []);
 
-  function handleControlAccessRevoked(data: { participantId: string; revokedBy: string }) {
+  const handleControlAccessRevoked = useCallback((data: ControlAccessData) => {
     console.log('[🔐 CONTROL] 📥 Received control access revoke', data);
     
-    if (data.participantId === localUser.current.id) {
+    if (data.participantId === localUser.current?.id) {
       console.log('[🔐 CONTROL] 😞 Your control access has been revoked');
       setControlAccessUsers(prev => {
         const updated = new Set(prev);
@@ -878,16 +972,16 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     setParticipants(prev => prev.map(p => 
       p.id === data.participantId ? { ...p, hasControlAccess: false } : p
     ));
-  }
+  }, []);
 
-  function leaveSession() {
+  const leaveSession = useCallback(() => {
     if (socketRef.current) {
       socketRef.current.emit("room:leave", { sessionId });
       socketRef.current.disconnect();
     }
     if (mediaStream.localStream) mediaStream.localStream.getTracks().forEach(t => t.stop());
-    globalThis.location.href = "/";
-  }
+    window.location.href = "/";
+  }, [sessionId, mediaStream.localStream, socketRef]);
 
   // Load available movies when movie selector opens
   useEffect(() => {
@@ -902,9 +996,9 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       };
       loadMovies();
     }
-  }, [showMovieSelector]);
+  }, [showMovieSelector, availableMovies.length]);
 
-  function handleChangeMovie(selectedMovie: Movie) {
+  const handleChangeMovie = useCallback((selectedMovie: Movie) => {
     // Check authentication - host or authenticated participants can change movie
     if (!isAuthenticated && !isHost) {
       console.log('[🎬 CHANGE MOVIE] ⚠️ User not authenticated, showing auth modal');
@@ -923,7 +1017,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       isAuthenticated,
       from: currentMovie.id, 
       to: selectedMovie.id,
-      userName: localUser.current.name
+      userName: localUser.current?.name
     });
     
     // Update local movie state
@@ -942,16 +1036,16 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     });
     
     setShowMovieSelector(false);
-  }
+  }, [isAuthenticated, isHost, currentMovie.id, sessionId, socketRef]);
 
-  function handleChangeMovieClick() {
+  const handleChangeMovieClick = useCallback(() => {
     // Check if user is authenticated
     if (!isAuthenticated && !isHost) {
       setShowAuthModal(true);
       return;
     }
     setShowMovieSelector(true);
-  }
+  }, [isAuthenticated, isHost]);
 
   // User interaction handling
   useEffect(() => {
@@ -963,7 +1057,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         if (isWaitingForInteraction.current && playerRef.current) {
           const internalPlayer = playerRef.current.getInternalPlayer();
           if (internalPlayer && internalPlayer.paused && isPlaying) {
-            internalPlayer.play().catch(e => console.log('❌ Play failed:', e.message));
+            internalPlayer.play().catch((e: Error) => console.log('❌ Play failed:', e.message));
           }
           isWaitingForInteraction.current = false;
         }
@@ -1002,11 +1096,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     
     const socket = socketRef.current;
     
-    const handleGrant = (data: { participantId: string; grantedBy: string }) => {
+    const handleGrant = (data: ControlAccessData) => {
       handleControlAccessGranted(data);
     };
     
-    const handleRevoke = (data: { participantId: string; revokedBy: string }) => {
+    const handleRevoke = (data: ControlAccessData) => {
       handleControlAccessRevoked(data);
     };
     
@@ -1019,7 +1113,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       socket.off('room:control:grant', handleGrant);
       socket.off('room:control:revoke', handleRevoke);
     };
-  }, [socketRef]);
+  }, [socketRef, handleControlAccessGranted, handleControlAccessRevoked]);
 
   // Listen for host control socket events
   useEffect(() => {
@@ -1041,14 +1135,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     };
     
     // Host lock/unlock
-    const handleLock = (data: { locked: boolean }) => {
-      setIsLocked(data.locked);
-    };
-    
-    // Host privacy change
-    const handlePrivacy = (data: { isPrivate: boolean }) => {
-      setIsPrivate(data.isPrivate);
-    };
+
     
     // Host chat toggle
     const handleChatToggle = (data: { enabled: boolean }) => {
@@ -1056,9 +1143,6 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     };
     
     // Host layout change
-    const handleLayout = (data: { layout: string }) => {
-      setCurrentLayout(data.layout);
-    };
     
     // Host fullscreen
     const handleFullscreen = (data: { enabled: boolean }) => {
@@ -1077,7 +1161,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     };
     
     // Host removed user
-    const handleRemoved = (data?: any) => {
+    const handleRemoved = (data?: { reason?: string; message?: string }) => {
       const reason = data?.reason || 'removed_by_host';
       const msg = reason === 'removed_by_host' ? 'You have been removed by the host' : (data?.message || 'You have been removed from this room');
       setRemovedMessage(msg);
@@ -1086,13 +1170,17 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       // stop local streams and pause player
       try {
         if (playerRef.current) {
-          const internal = (playerRef.current as any).getInternalPlayer?.();
-          if (internal && !internal.paused) internal.pause?.();
+          // Fixed: Remove 'any' type casting
+          const internal = playerRef.current.getInternalPlayer() as HTMLVideoElement | null;
+          if (internal && !internal.paused) {
+            internal.pause();
+          }
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        console.log(e); /* ignore */ }
 
       if (mediaStream.localStream) {
-        try { mediaStream.localStream.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+        try { mediaStream.localStream.getTracks().forEach(t => t.stop()); } catch (e) {  console.log(e);/* ignore */ }
       }
 
       // Give user a short moment to read the notice, then leave
@@ -1102,7 +1190,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
             socketRef.current.emit('room:leave', { sessionId });
             socketRef.current.disconnect();
           }
-        } catch (e) {}
+        } catch (e) {console.log(e)}
         window.location.href = '/home';
       }, 3500);
     };
@@ -1136,10 +1224,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     
     socket.on('room:host:restart', handleRestart);
     socket.on('room:host:ended', handleEndSession);
-    socket.on('room:host:locked', handleLock);
-    socket.on('room:host:privacy:changed', handlePrivacy);
     socket.on('room:host:chat:toggled', handleChatToggle);
-    socket.on('room:host:layout:changed', handleLayout);
     socket.on('room:host:fullscreen', handleFullscreen);
     socket.on('room:host:promoted', handlePromoted);
     socket.on('room:host:demoted', handleDemoted);
@@ -1153,10 +1238,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
     return () => {
       socket.off('room:host:restart', handleRestart);
       socket.off('room:host:ended', handleEndSession);
-      socket.off('room:host:locked', handleLock);
-      socket.off('room:host:privacy:changed', handlePrivacy);
       socket.off('room:host:chat:toggled', handleChatToggle);
-      socket.off('room:host:layout:changed', handleLayout);
       socket.off('room:host:fullscreen', handleFullscreen);
       socket.off('room:host:promoted', handlePromoted);
       socket.off('room:host:demoted', handleDemoted);
@@ -1167,49 +1249,106 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       socket.off('room:host:message:deleted', handleMessageDeleted);
       socket.off('room:host:message:pinned', handleMessagePinned);
     };
-  }, [socketRef]);
+  }, [socketRef, sessionId, mediaStream.localStream]);
 
   // Calculate participants - ensure local user is included and not duplicated
-  // Check if local user is already in participants array (from socket)
-  const localUserInParticipants = participants.find(p => p.id === localUser.current.id || p.socketId === socketRef.current?.id);
-  
-  const allParticipants = localUserInParticipants
-    ? participants.map(p => {
-        // Update local user with current media stream state
-        if (p.id === localUser.current.id || p.socketId === socketRef.current?.id) {
-          return {
+// ===== SNAPSHOT REFS INTO STATE (DO NOT READ .current IN RENDER) =====
+const [localUserId, setLocalUserId] = useState<string | null>(null);
+const [socketId, setSocketId] = useState<string | null>(null);
+
+useEffect(() => {
+  setTimeout(() => {
+    setLocalUserId(localUser.current?.id ?? null);
+    setSocketId(socketRef.current?.id ?? null);
+  }, 0);
+}, [socketRef]);
+
+
+// ===== CHECK IF LOCAL USER EXISTS IN PARTICIPANTS =====
+const localUserInParticipants = useMemo(() => {
+  if (!localUserId && !socketId) return undefined;
+
+  return participants.find(
+    p => p.id === localUserId || p.socketId === socketId
+  );
+}, [participants, localUserId, socketId]);
+
+
+// ===== BUILD PARTICIPANT LIST SAFELY =====
+const allParticipants = useMemo(() => {
+  if (!localUserId) return participants;
+
+  const localParticipantData = {
+    ...(localUserInParticipants ?? {}),
+    id: localUserId,
+    socketId: socketId || 'local',
+    muted: mediaStream.muted,
+    cameraOn: mediaStream.
+    cameraOn,
+    stream: mediaStream.localStream || undefined,
+    isHost,
+    hasControlAccess: isHost || controlAccessUsers.has(localUserId),
+    name: (localUserInParticipants?.name ?? 'You'),
+  };
+
+  if (localUserInParticipants) {
+    return participants.map(p =>
+      p.id === localUserId || p.socketId === socketId
+        ? {
             ...p,
             muted: mediaStream.muted,
             cameraOn: mediaStream.cameraOn,
             stream: mediaStream.localStream || undefined,
-            isHost
-          };
-        }
-        return p;
-      })
-    : [
-        // Local user not in participants yet, add it
-        {
-          ...localUser.current,
-          muted: mediaStream.muted,
-          cameraOn: mediaStream.cameraOn,
-          stream: mediaStream.localStream || undefined,
-          socketId: socketRef.current?.id || 'local',
-          isHost
-        },
-        ...participants.filter(p => p.id !== localUser.current.id && p.socketId !== socketRef.current?.id)
-      ];
+            isHost,
+            hasControlAccess:
+              isHost || controlAccessUsers.has(localUserId),
+          }
+        : p
+    );
+  }
 
-  // Remove any duplicates based on id or socketId
-  const uniqueParticipants = allParticipants.filter((p, index, self) => 
-    index === self.findIndex(participant => 
-      participant.id === p.id || 
-      (participant.socketId && p.socketId && participant.socketId === p.socketId)
+  return [
+    localParticipantData,
+    ...participants.filter(
+      p => p.id !== localUserId && p.socketId !== socketId
+    ),
+  ];
+}, [
+  participants,
+  localUserId,
+  socketId,
+  mediaStream.muted,
+  mediaStream.cameraOn,
+  mediaStream.localStream,
+  isHost,
+  controlAccessUsers,
+  localUserInParticipants,
+]);
+
+
+// ===== REMOVE DUPLICATES =====
+const uniqueParticipants = useMemo(() => {
+  return allParticipants.filter((p, index, self) =>
+    index ===
+    self.findIndex(
+      q =>
+        q.id === p.id ||
+        (q.socketId && p.socketId && q.socketId === p.socketId)
     )
   );
+}, [allParticipants]);
 
-  const participantCount = uniqueParticipants.length;
-  const localParticipant = uniqueParticipants.find(p => p.id === localUser.current.id) || uniqueParticipants[0];
+
+
+
+// ===== FINAL DERIVED VALUES =====
+const participantCount = uniqueParticipants.length;
+
+const localParticipant =
+  uniqueParticipants.find(p => p.id === localUserId) ??
+  uniqueParticipants[0];
+
+
   // If removed by host, render a blocking removed view
   if (removedByHost) {
     return (
@@ -1218,7 +1357,15 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
           <h2 className="text-2xl font-bold text-red-400 mb-3">You have been removed</h2>
           <p className="text-gray-300 mb-6">{removedMessage || 'You have been removed from this session by the host.'}</p>
           <button
-            onClick={() => { try { if (socketRef.current) { socketRef.current.emit('room:leave', { sessionId }); socketRef.current.disconnect(); } } catch (e) {} window.location.href = '/'; }}
+            onClick={() => { 
+              try { 
+                if (socketRef.current) { 
+                  socketRef.current.emit('room:leave', { sessionId }); 
+                  socketRef.current.disconnect(); 
+                } 
+              } catch (e) { console.log(e);} 
+              window.location.href = '/'; 
+            }}
             className="px-5 py-2 bg-red-500 text-white rounded font-semibold"
           >
             Leave
@@ -1247,7 +1394,15 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
           <div className="text-sm text-gray-200 mt-1">{removedMessage || 'You have been removed from this session by the host.'}</div>
           <div className="mt-3 flex justify-end">
             <button
-              onClick={() => { try { if (socketRef.current) { socketRef.current.emit('room:leave', { sessionId }); socketRef.current.disconnect(); } } catch (e) {} window.location.href = '/home'; }}
+              onClick={() => { 
+                try { 
+                  if (socketRef.current) { 
+                    socketRef.current.emit('room:leave', { sessionId }); 
+                    socketRef.current.disconnect(); 
+                  } 
+                } catch (e) { console.log(e);} 
+                window.location.href = '/home'; 
+              }}
               className="px-3 py-1 bg-white text-red-700 rounded text-sm font-semibold"
             >
               Leave now
@@ -1284,7 +1439,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
             onSeek={handleSeek}
             onPlaybackRateChange={handlePlaybackRateChange}
             onManualPlay={handleManualPlay}
-            playerRef={playerRef}
+            playerRef={playerRef as RefObject<ReactPlayer>}
           />
         </div>
 
@@ -1292,7 +1447,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
           <ChatPanel
             messages={messages}
             messageText={messageText}
-            localUserId={localUser.current.id}
+            localUserId={localUserId ?? ''}
             participants={uniqueParticipants}
             onMessageChange={setMessageText}
             onSendMessage={handleSendMessage}
@@ -1302,11 +1457,11 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         {showParticipants && (
           <ParticipantsPanel
             participants={uniqueParticipants}
-            localUserId={localUser.current.id}
+            localUserId={localUserId ?? ''}
             isHost={isHost}
             onGrantControlAccess={grantControlAccess}
             onRevokeControlAccess={revokeControlAccess}
-            socketRef={socketRef}
+            socketRef={socketRef as SocketRef}
             sessionId={sessionId}
           />
         )}
@@ -1319,10 +1474,10 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         showParticipants={showParticipants}
         showChat={showChat}
         showEmojiPicker={showEmojiPicker}
-        emojiPickerRef={emojiPickerRef}
+       emojiPickerRef={emojiPickerRef as React.RefObject<HTMLDivElement>}
         participantCount={participantCount}
         isHost={isHost}
-        isCoHost={coHostIds.includes(localUser.current.id)}
+        isCoHost={coHostIds.includes(localUserId || '')}
         onChangeMovie={handleChangeMovieClick}
         isAuthenticated={isAuthenticated}
         onToggleHostControls={() => setShowHostControls(!showHostControls)}
@@ -1424,7 +1579,7 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
       {/* Host Control Panel */}
       <HostControlPanel
         isHost={isHost}
-        isCoHost={coHostIds.includes(localUser.current.id)}
+        isCoHost={coHostIds.includes(localUserId || '')}
         sessionId={sessionId}
         participants={allParticipants}
         isOpen={showHostControls}
@@ -1433,11 +1588,22 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
         onUpdateProfile={(data) => {
           // update local store
           updateUser({ name: data.name, email: data.email, avatar: data.avatar });
+          // update the local ref and the rendered snapshot state
+          if (localUser.current) {
+            localUser.current.name = data.name ?? 'Unknown';
+            setCurrentUser({ name: data.name ?? 'Unknown', email: data.email ?? user?.email ?? '', avatar: data.avatar ?? user?.avatar ?? '' });
+          }
           // emit participant update
-          if (socketRef.current) socketRef.current.emit('room:participant:update', { sessionId, name: data.name, avatar: data.avatar });
+          if (socketRef.current && localUser.current) {
+            socketRef.current.emit('room:participant:update', { 
+              sessionId, 
+              name: data.name, 
+              avatar: data.avatar 
+            });
+          }
         }}
-        socketRef={socketRef}
-        currentUser={{ name: localUser.current.name, email: user?.email, avatar: user?.avatar }}
+        socketRef={socketRef as SocketRef}
+        currentUser={currentUser}
       />
 
       <style>{`

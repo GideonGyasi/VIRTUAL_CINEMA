@@ -19,7 +19,8 @@ const Home: React.FC = () => {
   const [trendingMovies, setTrendingMovies] = useState<MovieDetails[]>([]);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [pendingMovieId, setPendingMovieId] = useState<string | null>(null);
-  const heroIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Browser setInterval returns a number; avoid NodeJS namespace to satisfy TS in browser envs
+  const heroIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     const loadMovies = async () => {
@@ -84,7 +85,9 @@ const Home: React.FC = () => {
       const movieObj = source.find((m: Movie) => String(m.id) === String(pendingMovieId));
       if (movieObj) {
         navigate(`/group/${sessionId}`, { state: { movie: movieObj } });
-        setPendingMovieId(null);
+        // Avoid calling setState synchronously inside effect body to prevent cascading renders
+        // schedule the reset in the next tick
+        setTimeout(() => setPendingMovieId(null), 0);
       }
     }
   }, [showAuthModal, isAuthenticated, pendingMovieId, movies, navigate]);
