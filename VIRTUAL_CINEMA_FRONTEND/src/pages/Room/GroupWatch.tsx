@@ -865,7 +865,8 @@ const GroupWatch: React.FC<GroupWatchProps> = ({
   }, [messageText, chatEnabled, sessionId, socketRef]);
 
   const copySessionLink = useCallback(async () => {
-    const url = `${window.location.origin}/group/${sessionId}?movie=${encodeURIComponent(currentMovie.id || currentMovie.title)}`;
+    const FRONTEND_URL = import.meta.env.VITE_FRONTEND_URL || window.location.origin;
+    const url = `${FRONTEND_URL}/group/${sessionId}?movie=${encodeURIComponent(currentMovie.id || currentMovie.title)}`;
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
