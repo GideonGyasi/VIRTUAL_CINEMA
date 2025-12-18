@@ -3,5 +3,5 @@ export const makeId = (length = 8) => {
   return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 };
 
-export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "https://virtualcinemabackend.onrender.com";
 export const EMOJI_REACTIONS = ["🍿", "🎬", "👍", "❤️", "😂", "😮", "😢", "👏", "🎉", "🔥"];

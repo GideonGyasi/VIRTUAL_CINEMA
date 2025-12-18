@@ -18,7 +18,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   useEffect(() => {
     if (!token) return;
 
-    const newSocket = io('http://localhost:5000', {
+    const newSocket = io(import.meta.env.VITE_SOCKET_URL || 'https://virtualcinemabackend.onrender.com', {
       auth: { token },
     });
 

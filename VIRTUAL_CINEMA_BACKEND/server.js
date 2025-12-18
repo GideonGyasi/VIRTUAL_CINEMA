@@ -95,7 +95,7 @@ app.use(errorHandler);
  *  SOCKET.IO + SERVER INIT
  * ===========================
  */
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 const server = http.createServer(app);
 const io = require("socket.io")(server, {
   cors: { origin: "*" },
