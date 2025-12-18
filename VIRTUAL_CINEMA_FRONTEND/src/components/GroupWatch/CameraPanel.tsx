@@ -80,7 +80,7 @@ const CameraPanel: React.FC<CameraPanelProps> = ({
             >
               <div className="flex-1 relative">
                 <VideoStream
-                  stream={localParticipant.stream}
+                  stream={localParticipant.stream ?? null}
                   isLocal={true}
                   cameraOn={localParticipant.cameraOn}
                   muted={localParticipant.muted}

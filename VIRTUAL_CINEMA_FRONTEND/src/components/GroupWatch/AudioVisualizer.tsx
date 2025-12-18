@@ -15,8 +15,10 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
   const animationFrameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const dataArrayRef = useRef<Uint8Array>(new Uint8Array(0));
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const timeoutRef = useRef<number | null>(null);
+  const isSpeakingRef = useRef(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   useEffect(() => {
@@ -29,14 +31,26 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
         audioContextRef.current.close();
         audioContextRef.current = null;
       }
-      setIsSpeaking(false);
+      // Schedule clearing speaking state to avoid synchronous setState inside effect
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      timeoutRef.current = globalThis.setTimeout(() => {
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
+      }, 0);
       return;
     }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Cross-browser AudioContext constructor without using `any`
+    const win = globalThis as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+    const AudioCtor = win.AudioContext ?? win.webkitAudioContext;
+    if (!AudioCtor) return; // AudioContext not available in this environment
+    const audioContext = new AudioCtor();
     const analyser = audioContext.createAnalyser();
     const source = audioContext.createMediaStreamSource(stream);
     
@@ -60,11 +74,14 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
     const barWidth = WIDTH / barCount;
 
     const draw = () => {
-      if (!analyserRef.current || !dataArrayRef.current || !ctx) return;
+      if (!analyserRef.current || !ctx) return;
 
       animationFrameRef.current = requestAnimationFrame(draw);
 
-      analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+      // Copy into a fresh Uint8Array backed by ArrayBuffer to satisfy types and avoid SharedArrayBuffer issues
+      const tmp = new Uint8Array(dataArrayRef.current.length);
+      analyserRef.current.getByteFrequencyData(tmp);
+      dataArrayRef.current.set(tmp);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
       ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -92,7 +109,12 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
       // Detect if speaking (average volume above threshold)
       const avgVolume = sum / barCount;
       const threshold = HEIGHT * 0.1; // 10% of height
-      setIsSpeaking(avgVolume > threshold);
+      const speaking = avgVolume > threshold;
+      // Only update state when value changes to avoid excessive renders
+      if (speaking !== isSpeakingRef.current) {
+        isSpeakingRef.current = speaking;
+        setIsSpeaking(speaking);
+      }
     };
 
     draw();
@@ -104,7 +126,15 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
       }
-      setIsSpeaking(false);
+      // Schedule clearing speaking state asynchronously
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      timeoutRef.current = globalThis.setTimeout(() => {
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
+      }, 0);
     };
   }, [stream, isActive]);
 
